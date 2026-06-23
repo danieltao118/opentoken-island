@@ -375,13 +375,28 @@ function formatResetTime(value) {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function quotaFeedUnavailable(key, label, detail, status = "waiting") {
+function zaiFailureReason(message = "") {
+  const text = String(message || "").toLowerCase();
+  if (/(401|403|unauth|forbidden|invalid|expired|expire|\bkey\b|token|认证|授权|失效|无权|非法)/i.test(text)) {
+    return "auth";
+  }
+  return "read";
+}
+
+function quotaFeedUnavailable(key, label, reason = "waiting") {
+  const states = {
+    "not-connected": { valueLabel: "未配置", detail: "前往 Coding Quota Bar 绑定 Z.ai" },
+    auth: { valueLabel: "API Key 失效", detail: "请在 Coding Quota Bar 更新密钥" },
+    read: { valueLabel: "无法读取额度", detail: "Z.ai 接口暂不可用" },
+    waiting: { valueLabel: "--", detail: "等待额度上报" },
+  };
+  const state = states[reason] || states.waiting;
   return {
     key,
     label,
-    status,
-    valueLabel: "--",
-    detail,
+    status: reason === "waiting" ? "waiting" : "error",
+    valueLabel: state.valueLabel,
+    detail: state.detail,
     pct: 4,
   };
 }
@@ -421,7 +436,7 @@ async function fetchZaiQuotaForAccount(account) {
 
   if (!quotaResp.ok || quotaResp.json?.code !== 200 || !Array.isArray(quotaResp.json?.data?.limits)) {
     const message = quotaResp.json?.msg || quotaResp.error || "quota read failed";
-    return quotaFeedUnavailable("glm", "GLM / Z.ai", `Z.ai ${message}`, "error");
+    return quotaFeedUnavailable("glm", "GLM / Z.ai", zaiFailureReason(message));
   }
 
   const now = new Date();
@@ -453,7 +468,7 @@ async function fetchZaiQuotaForAccount(account) {
     value: used,
     total,
     valueLabel: total > 0 ? `${formatCount(used)} / ${formatCount(total)}` : formatCount(used),
-    detail: `Remaining ${remaining}%${resetAt ? ` · reset ${resetAt}` : ""}${level}`,
+    detail: `剩余 ${remaining}%${resetAt ? ` · ${resetAt} 重置` : ""}${level}`,
     pct: Math.max(4, Math.round(usageRate)),
   };
 }
@@ -461,10 +476,10 @@ async function fetchZaiQuotaForAccount(account) {
 async function fetchZaiQuota() {
   const accounts = enabledZaiAccounts();
   if (!accounts.length) {
-    return quotaFeedUnavailable("glm", "GLM / Z.ai", "Coding Quota Bar not connected");
+    return quotaFeedUnavailable("glm", "GLM / Z.ai", "not-connected");
   }
 
-  let lastError = quotaFeedUnavailable("glm", "GLM / Z.ai", "Z.ai quota read failed", "error");
+  let lastError = quotaFeedUnavailable("glm", "GLM / Z.ai", "read");
   for (const account of accounts) {
     const result = await fetchZaiQuotaForAccount(account);
     if (result.status === "ok") return result;
@@ -483,30 +498,43 @@ async function cachedZaiQuota() {
   } catch {
     quotaCache = {
       at: Date.now(),
-      zai: quotaFeedUnavailable("glm", "GLM / Z.ai", "Z.ai quota read failed", "error"),
+      zai: quotaFeedUnavailable("glm", "GLM / Z.ai", "read"),
     };
   }
   return quotaCache.zai;
 }
 
-function gptQuotaFromTools(byTool = {}) {
-  const used = Number(byTool.gpt || 0);
+function codexQuotaFromTools(byTool = {}, total = 0) {
+  const used = Number(byTool.codex || 0);
+  const share = total > 0 ? used / total : 0;
+  if (used > 0) {
+    return {
+      key: "codex",
+      label: "Codex",
+      status: "usage",
+      value: used,
+      total,
+      valueLabel: formatCount(used),
+      detail: `今日 OpenToken 占比 ${formatPercent(share)}`,
+      pct: Math.max(4, Math.round(share * 100)),
+    };
+  }
   return {
-    key: "gpt",
-    label: "GPT / OpenAI",
-    status: used > 0 ? "usage" : "waiting",
-    value: used,
+    key: "codex",
+    label: "Codex",
+    status: "waiting",
+    value: 0,
     total: 0,
-    valueLabel: used > 0 ? formatCount(used) : "--",
-    detail: used > 0 ? "Today OpenToken usage" : "Waiting GPT/OpenAI rows",
-    pct: used > 0 ? 100 : 4,
+    valueLabel: "--",
+    detail: "等待今日 Codex 上报",
+    pct: 4,
   };
 }
 
-async function quotaFeeds(byTool = {}) {
+async function quotaFeeds(byTool = {}, total = 0) {
   return [
     await cachedZaiQuota(),
-    gptQuotaFromTools(byTool),
+    codexQuotaFromTools(byTool, total),
   ];
 }
 
@@ -711,7 +739,7 @@ async function buildSummary() {
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
   const tools = toolsFromMap(byTool);
-  const quotas = await quotaFeeds(byTool);
+  const quotas = await quotaFeeds(byTool, total);
   const game = buildGame({
     total,
     rank,

@@ -132,7 +132,11 @@ assert.match(
   /body\{[^}]*padding:18px/,
   "Popover body should leave enough transparent padding for shadow and rounded corners"
 );
-assert.match(popoverHtml, /quotaList/, "Popover must render GLM/GPT quota rows");
+assert.match(popoverHtml, /quotaList/, "Popover must render GLM/Codex quota rows");
+assert.match(popoverHtml, /label: 'Codex'/, "Popover fallback quota card should be Codex, not GPT/OpenAI");
+assert.doesNotMatch(popoverHtml, /Waiting GPT\/OpenAI rows/, "Quota UI should not show GPT/OpenAI as the Codex quota card");
+assert.doesNotMatch(popoverHtml, /[^<]\/(?:span|strong)>/, "Popover HTML must not contain malformed closing tags that corrupt layout");
+assert.doesNotMatch(popoverHtml, /\uFFFD|鎺|鐩|璇|绛|涓婃姤|浜縛|涓嘸/, "Popover must not contain mojibake strings");
 
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
 assert.match(
@@ -157,6 +161,10 @@ assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quo
 assert.match(serverJs, /quotaFeeds/, "Summary payload must expose quota feeds to the UI");
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
 assert.match(serverJs, /glm[\s\S]*GLM \/ Z\.ai/, "GLM/Z.ai usage should have an explicit label");
-assert.match(serverJs, /gpt[\s\S]*GPT \/ OpenAI/, "GPT/OpenAI usage should have an explicit label");
+assert.match(serverJs, /codexQuotaFromTools/, "Quota feeds should expose a Codex usage card");
+assert.doesNotMatch(serverJs, /function gptQuotaFromTools/, "Quota feeds should not use the old GPT/OpenAI card");
+assert.match(serverJs, /toFixed\(2\)}亿/, "Large token counts should render with the 亿 unit");
+assert.match(serverJs, /toFixed\(1\)}万/, "Mid-size token counts should render with the 万 unit");
+assert.doesNotMatch(serverJs, /\uFFFD|浜縛|涓嘸|鎺掑悕|鐜嬪骇|浠诲姟/, "Server user-facing strings must not contain mojibake");
 
 console.log("windows scaffold contract ok");
