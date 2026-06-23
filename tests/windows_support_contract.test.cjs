@@ -39,6 +39,36 @@ assert.match(
 );
 assert.match(
   mainRs,
+  /ensure_startup_registration\(\)\?/,
+  "Windows release builds must register the tray app in HKCU Run for startup residency"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "show-quota-bar", "Show Quota Bar"/,
+  "Tray menu must expose a persistent Coding Quota Bar style compact window"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "hide-quota-bar", "Hide Quota Bar"/,
+  "Tray menu must let users hide the persistent compact quota bar"
+);
+assert.match(
+  mainRs,
+  /ensure_quota_bar_window\(app\)\?/,
+  "The persistent quota bar should be prewarmed so opening it is fast"
+);
+assert.match(
+  mainRs,
+  /fn show_quota_bar\([\s\S]*?window\.show\(\)\?;[\s\S]*?Ok\(\(\)\)/,
+  "Show Quota Bar must reveal the compact window"
+);
+assert.doesNotMatch(
+  mainRs.match(/fn show_quota_bar[\s\S]*?fn /)?.[0] || "",
+  /schedule_hide_island|schedule_hide_quota_bar/,
+  "Show Quota Bar must stay resident instead of auto-hiding after a timer"
+);
+assert.match(
+  mainRs,
   /TrayIconEvent::Enter[\s\S]*show_hover_panel/,
   "Tray hover must show the full quota panel when the cursor enters the tray icon"
 );
@@ -102,5 +132,31 @@ assert.match(
   /body\{[^}]*padding:18px/,
   "Popover body should leave enough transparent padding for shadow and rounded corners"
 );
+assert.match(popoverHtml, /quotaList/, "Popover must render GLM/GPT quota rows");
+
+const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
+assert.match(
+  windowsSupport,
+  /STARTUP_RUN_KEY: &str = r"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"/,
+  "Startup registration must use the current user's Run key"
+);
+assert.match(
+  windowsSupport,
+  /STARTUP_RUN_VALUE_NAME: &str = "OpenTokenIsland"/,
+  "Startup Run value should be stable across releases"
+);
+assert.match(
+  windowsSupport,
+  /startup_registry_args\(exe: &Path\) -> Vec<String>/,
+  "Startup registry arguments should be generated in a testable helper"
+);
+
+const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
+assert.match(serverJs, /CODING_QUOTA_CONFIG_PATH/, "Server must know where Coding Quota Bar stores provider config");
+assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quota feed");
+assert.match(serverJs, /quotaFeeds/, "Summary payload must expose quota feeds to the UI");
+assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
+assert.match(serverJs, /glm[\s\S]*GLM \/ Z\.ai/, "GLM/Z.ai usage should have an explicit label");
+assert.match(serverJs, /gpt[\s\S]*GPT \/ OpenAI/, "GPT/OpenAI usage should have an explicit label");
 
 console.log("windows scaffold contract ok");

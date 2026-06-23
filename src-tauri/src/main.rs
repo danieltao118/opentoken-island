@@ -23,6 +23,8 @@ use tauri::{
     AppHandle, Manager, PhysicalPosition, Position, Rect, Url, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+use windows_support::startup_registry_args;
 use windows_support::{
     floating_window_origin_bounded_with_anchor_gap, is_port_open, local_url, opentoken_bin,
     server_resource_path, DEFAULT_PORT,
@@ -30,6 +32,7 @@ use windows_support::{
 
 const PANEL_LABEL: &str = "panel";
 const ISLAND_LABEL: &str = "island";
+const QUOTA_BAR_LABEL: &str = "quota-bar";
 const PANEL_WIDTH: i32 = 430;
 const PANEL_HEIGHT: i32 = 700;
 const PANEL_SHADOW_PAD: i32 = 18;
@@ -37,6 +40,8 @@ const PANEL_WINDOW_WIDTH: i32 = PANEL_WIDTH + PANEL_SHADOW_PAD * 2;
 const PANEL_WINDOW_HEIGHT: i32 = PANEL_HEIGHT + PANEL_SHADOW_PAD * 2;
 const ISLAND_WIDTH: i32 = 560;
 const ISLAND_HEIGHT: i32 = 118;
+const QUOTA_BAR_WIDTH: i32 = 560;
+const QUOTA_BAR_HEIGHT: i32 = 118;
 const FLOATING_MARGIN: i32 = 12;
 const PANEL_ANCHOR_GAP: i32 = 430;
 
@@ -60,6 +65,7 @@ fn main() {
         .manage(ServerProcess(Mutex::new(None)))
         .manage(PanelState::new())
         .setup(|app| {
+            ensure_startup_registration()?;
             start_server_if_needed(app.handle())?;
             prewarm_windows(app.handle())?;
             setup_tray(app.handle())?;
@@ -72,6 +78,9 @@ fn main() {
                     api.prevent_close();
                     let _ = window.hide();
                 } else if window.label() == ISLAND_LABEL {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else if window.label() == QUOTA_BAR_LABEL {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -100,6 +109,10 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let open_panel = MenuItem::with_id(app, "open-panel", "Open Panel", true, None::<&str>)?;
     let show_island_item =
         MenuItem::with_id(app, "show-island", "Show Island", true, None::<&str>)?;
+    let show_quota_bar_item =
+        MenuItem::with_id(app, "show-quota-bar", "Show Quota Bar", true, None::<&str>)?;
+    let hide_quota_bar_item =
+        MenuItem::with_id(app, "hide-quota-bar", "Hide Quota Bar", true, None::<&str>)?;
     let open_browser =
         MenuItem::with_id(app, "open-browser", "Open Browser UI", true, None::<&str>)?;
     let open_logs = MenuItem::with_id(app, "open-logs", "Open Logs", true, None::<&str>)?;
@@ -110,6 +123,8 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
         &[
             &open_panel,
             &show_island_item,
+            &show_quota_bar_item,
+            &hide_quota_bar_item,
             &open_browser,
             &open_logs,
             &separator,
@@ -127,6 +142,12 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
             "show-island" => {
                 let _ = show_island(app);
+            }
+            "show-quota-bar" => {
+                let _ = show_quota_bar(app);
+            }
+            "hide-quota-bar" => {
+                let _ = hide_quota_bar(app);
             }
             "open-browser" => {
                 let _ = open_external(&local_url("popover.html"));
@@ -166,6 +187,46 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     }
 
     builder.build(app)?;
+    Ok(())
+}
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn ensure_startup_registration() -> tauri::Result<()> {
+    let exe = env::current_exe().map_err(|error| {
+        tauri::Error::Io(IoError::new(
+            error.kind(),
+            format!("failed to resolve current executable for startup registration: {error}"),
+        ))
+    })?;
+    let args = startup_registry_args(&exe);
+    let mut command = Command::new("reg");
+    command.args(&args);
+
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x08000000);
+
+    let output = command.output().map_err(|error| {
+        tauri::Error::Io(IoError::new(
+            error.kind(),
+            format!("failed to register startup command: {error}"),
+        ))
+    })?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(tauri::Error::Io(IoError::new(
+            ErrorKind::Other,
+            format!(
+                "startup registration failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )))
+    }
+}
+
+#[cfg(any(not(target_os = "windows"), debug_assertions))]
+fn ensure_startup_registration() -> tauri::Result<()> {
     Ok(())
 }
 
@@ -228,6 +289,7 @@ fn wait_for_server(port: u16, timeout: Duration) -> tauri::Result<()> {
 fn prewarm_windows(app: &AppHandle) -> tauri::Result<()> {
     let _ = ensure_panel_window(app)?;
     let _ = ensure_island_window(app)?;
+    let _ = ensure_quota_bar_window(app)?;
     Ok(())
 }
 
@@ -324,6 +386,25 @@ fn show_island(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+fn show_quota_bar(app: &AppHandle) -> tauri::Result<()> {
+    let cursor = app
+        .cursor_position()
+        .unwrap_or_else(|_| PhysicalPosition::new(0.0, 0.0));
+    let window = ensure_quota_bar_window(app)?;
+    let position = floating_position(
+        app,
+        cursor,
+        Rect::default(),
+        QUOTA_BAR_WIDTH,
+        QUOTA_BAR_HEIGHT,
+        FLOATING_MARGIN,
+        FLOATING_MARGIN,
+    );
+    window.set_position(Position::Physical(position))?;
+    window.show()?;
+    Ok(())
+}
+
 fn floating_position(
     app: &AppHandle,
     cursor: PhysicalPosition<f64>,
@@ -386,6 +467,25 @@ fn floating_position(
         )
     };
     PhysicalPosition::new(x, y)
+}
+
+fn ensure_quota_bar_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    if let Some(window) = app.get_webview_window(QUOTA_BAR_LABEL) {
+        return Ok(window);
+    }
+
+    let url = external_url("island.html")?;
+    WebviewWindowBuilder::new(app, QUOTA_BAR_LABEL, WebviewUrl::External(url))
+        .title("OpenToken Island Quota Bar")
+        .inner_size(QUOTA_BAR_WIDTH as f64, QUOTA_BAR_HEIGHT as f64)
+        .decorations(false)
+        .transparent(true)
+        .focusable(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .visible(false)
+        .build()
 }
 
 fn ensure_island_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
@@ -454,6 +554,13 @@ fn schedule_hide_island(app: &AppHandle, delay: Duration) {
 
 fn hide_island(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(ISLAND_LABEL) {
+        window.hide()?;
+    }
+    Ok(())
+}
+
+fn hide_quota_bar(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(QUOTA_BAR_LABEL) {
         window.hide()?;
     }
     Ok(())

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_PORT: u16 = 4174;
+pub const STARTUP_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+pub const STARTUP_RUN_VALUE_NAME: &str = "OpenTokenIsland";
 
 pub fn opentoken_bin(home: &Path) -> PathBuf {
     home.join(".opentoken").join("bin").join("opentoken.exe")
@@ -15,6 +17,24 @@ pub fn server_resource_path(resource_dir: &Path) -> PathBuf {
 pub fn local_url(path: &str) -> String {
     let clean = path.trim_start_matches('/');
     format!("http://127.0.0.1:{DEFAULT_PORT}/{clean}")
+}
+
+pub fn startup_run_value(exe: &Path) -> String {
+    format!("\"{}\"", exe.display())
+}
+
+pub fn startup_registry_args(exe: &Path) -> Vec<String> {
+    vec![
+        "add".to_string(),
+        STARTUP_RUN_KEY.to_string(),
+        "/v".to_string(),
+        STARTUP_RUN_VALUE_NAME.to_string(),
+        "/t".to_string(),
+        "REG_SZ".to_string(),
+        "/d".to_string(),
+        startup_run_value(exe),
+        "/f".to_string(),
+    ]
 }
 
 pub fn is_port_open(port: u16) -> bool {
@@ -143,6 +163,20 @@ mod tests {
             local_url("/island.html"),
             "http://127.0.0.1:4174/island.html"
         );
+    }
+
+    #[test]
+    fn builds_startup_registry_args() {
+        let exe = Path::new(r"C:\Program Files\OpenToken Island\opentoken-island.exe");
+        let args = startup_registry_args(exe);
+        assert_eq!(args[0], "add");
+        assert_eq!(args[1], STARTUP_RUN_KEY);
+        assert_eq!(args[3], STARTUP_RUN_VALUE_NAME);
+        assert_eq!(
+            args[7],
+            r#""C:\Program Files\OpenToken Island\opentoken-island.exe""#
+        );
+        assert_eq!(args[8], "/f");
     }
 
     #[test]

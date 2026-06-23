@@ -12,6 +12,10 @@ const CONFIG_PATH = path.join(HOME, ".opentoken", "config.json");
 const STATE_PATH = path.join(HOME, ".opentoken", "island-state.json");
 const EVENT_LOG_PATH = path.join(HOME, ".opentoken", "island-events.log");
 const DEFAULT_UPSTREAM_ORIGIN = "https://scys.com";
+const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
+const CODING_QUOTA_CONFIG_PATH = path.join(APPDATA, "coding-quota-bar", "config.json");
+const ZAI_CODING_API_BASE = "https://api.z.ai";
+const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -22,6 +26,7 @@ const mime = {
 };
 
 let state = loadState();
+let quotaCache = { at: 0, zai: null };
 const OPENTOKEN = process.env.OPENTOKEN_BIN || state.opentokenBin || findOpenTokenBinary() || "opentoken";
 
 function loadState() {
@@ -176,7 +181,7 @@ function readBody(req) {
   });
 }
 
-function requestText(method, targetUrl, body = "", headers = {}) {
+function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000) {
   return new Promise((resolve) => {
     const target = new URL(targetUrl);
     const transport = target.protocol === "https:" ? https : http;
@@ -190,7 +195,7 @@ function requestText(method, targetUrl, body = "", headers = {}) {
       {
         method,
         headers: requestHeaders,
-        timeout: 30000,
+        timeout,
       },
       (res) => {
         const chunks = [];
@@ -251,6 +256,52 @@ function rawTokens(row) {
     + Number(row.cache_write || 0);
 }
 
+function normalizeToolName(name) {
+  const clean = String(name || "unknown")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9.+-]/g, "");
+
+  if (!clean) return "unknown";
+  if (clean.includes("codex")) return "codex";
+  if (clean.includes("claude")) return "claude-code";
+  if (clean.includes("gemini")) return "gemini";
+  if (clean.includes("openclaw")) return "openclaw";
+  if (clean.includes("opencode")) return "opencode";
+  if (
+    clean === "gpt"
+    || clean.startsWith("gpt")
+    || clean.includes("chatgpt")
+    || clean === "openai"
+    || clean.startsWith("openai-")
+  ) {
+    return "gpt";
+  }
+  if (
+    clean === "glm"
+    || clean.startsWith("glm")
+    || clean.includes("zhipu")
+    || clean.includes("bigmodel")
+    || clean === "zai"
+    || clean === "z-ai"
+    || clean.startsWith("zai-")
+    || clean.startsWith("z-ai-")
+  ) {
+    return "glm";
+  }
+  return clean;
+}
+
+function normalizeToolMap(byTool = {}) {
+  const normalized = {};
+  for (const [name, value] of Object.entries(byTool || {})) {
+    const tool = normalizeToolName(name);
+    normalized[tool] = (normalized[tool] || 0) + Number(value || 0);
+  }
+  return normalized;
+}
+
 function summarizeRows(rows, preferredDate = "") {
   const dates = [...new Set(rows.map((row) => row.date).filter(Boolean))].sort();
   const date = preferredDate && dates.includes(preferredDate)
@@ -260,7 +311,8 @@ function summarizeRows(rows, preferredDate = "") {
   const byTool = {};
   let normalized = 0;
   for (const row of dayRows) {
-    byTool[row.tool] = (byTool[row.tool] || 0) + rawTokens(row);
+    const tool = normalizeToolName(row.tool || row.provider || row.client || "unknown");
+    byTool[tool] = (byTool[tool] || 0) + rawTokens(row);
     normalized += Number(row.normalized || 0);
   }
   const total = Object.values(byTool).reduce((sum, value) => sum + value, 0);
@@ -284,6 +336,8 @@ function toolLabel(name) {
     "claude-code": "Claude Code",
     codex: "Codex",
     gemini: "Gemini",
+    glm: "GLM / Z.ai",
+    gpt: "GPT / OpenAI",
     openclaw: "OpenClaw",
     opencode: "opencode",
   };
@@ -295,10 +349,165 @@ function toolIcon(name) {
     "claude-code": "bot",
     codex: "zap",
     gemini: "sparkles",
+    glm: "brain-circuit",
+    gpt: "sparkle",
     openclaw: "terminal",
     opencode: "code-2",
   };
   return icons[name] || "terminal";
+}
+
+function clampPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, number));
+}
+
+function formatZaiDateTime(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatResetTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function quotaFeedUnavailable(key, label, detail, status = "waiting") {
+  return {
+    key,
+    label,
+    status,
+    valueLabel: "--",
+    detail,
+    pct: 4,
+  };
+}
+
+function readCodingQuotaConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(CODING_QUOTA_CONFIG_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function enabledZaiAccounts() {
+  const config = readCodingQuotaConfig();
+  const accounts = (config.providers?.zhipu?.accounts || [])
+    .filter((account) => account?.enabled && String(account.apiKey || "").trim());
+  const envKey = String(process.env.Z_AI_API_KEY || "").trim();
+  if (envKey) {
+    accounts.push({ enabled: true, apiKey: envKey, label: "env" });
+  }
+  return accounts;
+}
+
+async function fetchZaiQuotaForAccount(account) {
+  const headers = {
+    authorization: `Bearer ${String(account.apiKey).trim()}`,
+    accept: "application/json",
+    "user-agent": "opentoken-island/0.1",
+  };
+  const quotaResp = await requestText(
+    "GET",
+    `${ZAI_CODING_API_BASE}/api/monitor/usage/quota/limit`,
+    "",
+    headers,
+    8000
+  );
+
+  if (!quotaResp.ok || quotaResp.json?.code !== 200 || !Array.isArray(quotaResp.json?.data?.limits)) {
+    const message = quotaResp.json?.msg || quotaResp.error || "quota read failed";
+    return quotaFeedUnavailable("glm", "GLM / Z.ai", `Z.ai ${message}`, "error");
+  }
+
+  const now = new Date();
+  const oneDayAgo = new Date(now.getTime() - 86400000);
+  const usageResp = await requestText(
+    "GET",
+    `${ZAI_CODING_API_BASE}/api/monitor/usage/model-usage?startTime=${encodeURIComponent(formatZaiDateTime(oneDayAgo))}&endTime=${encodeURIComponent(formatZaiDateTime(now))}`,
+    "",
+    headers,
+    8000
+  );
+
+  const tokenLimit = quotaResp.json.data.limits.find((item) => item.type === "TOKENS_LIMIT")
+    || quotaResp.json.data.limits[0];
+  const usageRate = clampPercent(tokenLimit?.percentage || 0);
+  const modelCalls = Number(usageResp.json?.data?.totalUsage?.totalModelCallCount);
+  const currentValue = Number(tokenLimit?.currentValue || 0);
+  const used = Number.isFinite(modelCalls) && modelCalls > 0 ? modelCalls : currentValue;
+  const totalByRate = usageRate > 0 ? Math.round(used / (usageRate / 100)) : 0;
+  const total = Math.max(used, totalByRate, Number(tokenLimit?.usage || 0));
+  const remaining = Math.max(0, 100 - Math.round(usageRate));
+  const resetAt = tokenLimit?.nextResetTime ? formatResetTime(tokenLimit.nextResetTime) : "";
+  const level = quotaResp.json.data.level ? ` · ${String(quotaResp.json.data.level).toUpperCase()}` : "";
+
+  return {
+    key: "glm",
+    label: account.label ? `GLM / Z.ai · ${account.label}` : "GLM / Z.ai",
+    status: "ok",
+    value: used,
+    total,
+    valueLabel: total > 0 ? `${formatCount(used)} / ${formatCount(total)}` : formatCount(used),
+    detail: `Remaining ${remaining}%${resetAt ? ` · reset ${resetAt}` : ""}${level}`,
+    pct: Math.max(4, Math.round(usageRate)),
+  };
+}
+
+async function fetchZaiQuota() {
+  const accounts = enabledZaiAccounts();
+  if (!accounts.length) {
+    return quotaFeedUnavailable("glm", "GLM / Z.ai", "Coding Quota Bar not connected");
+  }
+
+  let lastError = quotaFeedUnavailable("glm", "GLM / Z.ai", "Z.ai quota read failed", "error");
+  for (const account of accounts) {
+    const result = await fetchZaiQuotaForAccount(account);
+    if (result.status === "ok") return result;
+    lastError = result;
+  }
+  return lastError;
+}
+
+async function cachedZaiQuota() {
+  if (quotaCache.zai && Date.now() - quotaCache.at < QUOTA_CACHE_TTL_MS) {
+    return quotaCache.zai;
+  }
+
+  try {
+    quotaCache = { at: Date.now(), zai: await fetchZaiQuota() };
+  } catch {
+    quotaCache = {
+      at: Date.now(),
+      zai: quotaFeedUnavailable("glm", "GLM / Z.ai", "Z.ai quota read failed", "error"),
+    };
+  }
+  return quotaCache.zai;
+}
+
+function gptQuotaFromTools(byTool = {}) {
+  const used = Number(byTool.gpt || 0);
+  return {
+    key: "gpt",
+    label: "GPT / OpenAI",
+    status: used > 0 ? "usage" : "waiting",
+    value: used,
+    total: 0,
+    valueLabel: used > 0 ? formatCount(used) : "--",
+    detail: used > 0 ? "Today OpenToken usage" : "Waiting GPT/OpenAI rows",
+    pct: used > 0 ? 100 : 4,
+  };
+}
+
+async function quotaFeeds(byTool = {}) {
+  return [
+    await cachedZaiQuota(),
+    gptQuotaFromTools(byTool),
+  ];
 }
 
 function rankedTools(byTool = {}, total = 0) {
@@ -417,9 +626,11 @@ function buildGame({ total, rank, rankDelta, byTool, previous, next, gap, lead }
 }
 
 function sameToolBreakdown(entryTools = {}, summaryTools = {}) {
-  const keys = Object.keys(summaryTools);
+  const entry = normalizeToolMap(entryTools);
+  const summary = normalizeToolMap(summaryTools);
+  const keys = Object.keys(summary);
   if (!keys.length) return false;
-  return keys.every((key) => Number(entryTools[key] || 0) === Number(summaryTools[key] || 0));
+  return keys.every((key) => Number(entry[key] || 0) === Number(summary[key] || 0));
 }
 
 function findOwnEntry(entries, summary) {
@@ -488,18 +699,19 @@ async function refreshLeaderboard(summary, previousRank = null) {
   return state.leaderboard;
 }
 
-function buildSummary() {
+async function buildSummary() {
   const uploadSummary = state.lastUpload?.summary || null;
   const board = state.leaderboard || null;
   const own = board?.own || null;
   const previous = board?.previous || null;
   const next = board?.next || null;
-  const byTool = own?.byTool || uploadSummary?.byTool || {};
+  const byTool = normalizeToolMap(own?.byTool || uploadSummary?.byTool || {});
   const total = Number(own?.score || uploadSummary?.total || 0);
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
   const tools = toolsFromMap(byTool);
+  const quotas = await quotaFeeds(byTool);
   const game = buildGame({
     total,
     rank,
@@ -538,6 +750,7 @@ function buildSummary() {
     quests: game.quests,
     badges: game.badges,
     tools,
+    quotaFeeds: quotas,
     upstream: {
       accepted: state.lastUpload?.upstream?.json?.accepted ?? null,
       status: state.lastUpload?.upstream?.status ?? null,
@@ -634,7 +847,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       ok: true,
       event,
-      summary: buildSummary(),
+      summary: await buildSummary(),
     });
   }
 
@@ -643,7 +856,7 @@ async function handleApi(req, res, url) {
       await refreshLeaderboard(state.lastUpload.summary, state.leaderboard?.own?.rank || null);
     }
     return json(res, 200, {
-      ...buildSummary(),
+      ...await buildSummary(),
       account: accountStatus(),
       service: await serviceStatus(),
     });
@@ -656,7 +869,7 @@ async function handleApi(req, res, url) {
     return json(res, result.ok ? 200 : 500, {
       ok: result.ok,
       output: (result.stdout || result.stderr || result.message).trim(),
-      summary: buildSummary(),
+      summary: await buildSummary(),
       account: accountStatus(),
       service: await serviceStatus(),
     });
