@@ -136,13 +136,21 @@ assert.match(
   /body\{[^}]*padding:18px/,
   "Popover body should leave enough transparent padding for shadow and rounded corners"
 );
-assert.match(popoverHtml, /quotaList/, "Popover must render GLM/Codex quota rows");
+assert.match(popoverHtml, /quotaList/, "Popover must render the GLM quota module");
 assert.match(popoverHtml, /renderQuotaItems/, "Popover quota cards must render nested quota items");
 assert.match(popoverHtml, /quota-items/, "Popover quota UI should support multiple rows per provider");
+assert.match(popoverHtml, /renderGlmQuotaCard/, "Popover should render one focused GLM quota card");
+assert.match(popoverHtml, /quota-card-wide/, "GLM quota card should span the panel width");
+assert.match(popoverHtml, /usageLabel|rawValueLabel/, "Quota rows should show Coding Quota Bar style raw usage values");
 assert.match(popoverHtml, /5小时额度/, "Popover should show the five-hour quota bucket");
 assert.match(popoverHtml, /MCP额度/, "Popover should show the Z.ai MCP quota bucket");
-assert.match(popoverHtml, /周额度/, "Popover should show the weekly quota bucket");
-assert.match(popoverHtml, /label: 'Codex'/, "Popover fallback quota card should be Codex, not GPT/OpenAI");
+assert.match(popoverHtml, /重置/, "Popover should show reset time details from Coding Quota Bar");
+assert.match(popoverHtml, /\.bar\{display:block/, "Quota and tool progress bars should render as real horizontal bars");
+assert.match(popoverHtml, /function visibleTools/, "Popover should filter temporarily hidden tools before rendering");
+assert.match(popoverHtml, /!\s*\/\^codex\$\/i\.test/, "Codex tool usage should be hidden from the panel for now");
+assert.doesNotMatch(popoverHtml, /Codex Main/, "Static badge placeholders should not flash Codex while it is hidden");
+assert.doesNotMatch(popoverHtml, /label: 'Codex'/, "Codex quota fallback should be hidden for now");
+assert.doesNotMatch(popoverHtml, /Codex[\s\S]{0,80}周额度/, "Codex quota card should be hidden for now");
 assert.doesNotMatch(popoverHtml, /Waiting GPT\/OpenAI rows/, "Quota UI should not show GPT/OpenAI as the Codex quota card");
 assert.doesNotMatch(popoverHtml, /[^<]\/(?:span|strong)>/, "Popover HTML must not contain malformed closing tags that corrupt layout");
 assert.doesNotMatch(popoverHtml, /\uFFFD|鎺|鐩|璇|绛|涓婃姤|浜縛|涓嘸/, "Popover must not contain mojibake strings");
@@ -170,6 +178,19 @@ assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quo
 assert.match(serverJs, /quotaFeeds/, "Summary payload must expose quota feeds to the UI");
 assert.match(serverJs, /function zaiQuotaItems/, "Z.ai quota feed must expose split quota buckets");
 assert.match(serverJs, /function codexQuotaItems/, "Codex quota feed must expose five-hour and weekly buckets");
+assert.match(serverJs, /function quotaUsageLabel/, "Z.ai quota items must expose raw used/total labels like Coding Quota Bar");
+assert.match(serverJs, /usageLabel/, "Z.ai quota items should include un-compacted usage labels for the UI");
+assert.match(serverJs, /remainingLabel/, "Z.ai quota items should include remaining percentage labels");
+assert.match(serverJs, /levelLabel/, "Z.ai quota feed should expose the Coding Plan level");
+assert.match(serverJs, /readWindowsUserEnv/, "Server should read user-level Z_AI_API_KEY when the process env is stale");
+assert.match(serverJs, /HKCU\\\\Environment/, "Windows user env lookup should use HKCU Environment");
+assert.match(serverJs, /enc:/, "Encrypted Coding Quota Bar keys should not be sent as raw bearer tokens");
+assert.match(serverJs, /function requestTextOnce/, "HTTP requests should be retryable after a DNS fallback");
+assert.match(serverJs, /Resolve-DnsName/, "Windows Node DNS failures should fall back to the OS resolver");
+assert.match(serverJs, /servername: target\.hostname/, "DNS fallback must keep the original TLS SNI host");
+assert.match(serverJs, /DNS_FALLBACK_TTL_MS/, "Windows DNS fallback should be cached between quota refreshes");
+assert.match(serverJs, /quota\/limit[\s\S]*30000,\s*2/, "Z.ai quota reads need enough timeout for DNS fallback");
+assert.match(serverJs, /requestTextWithRetry\([\s\S]*quota\/limit/, "Z.ai quota reads should use retry logic");
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");
 assert.match(serverJs, /leaderboardMatched/, "Sync state must distinguish uploaded data from leaderboard matches");
 assert.match(serverJs, /排行榜仅返回前/, "Sync detail should explain when the current account is not in the returned leaderboard page");

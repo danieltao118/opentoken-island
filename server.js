@@ -3,7 +3,7 @@ const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 
 const PORT = Number(process.env.OPENTOKEN_ISLAND_PORT || 4174);
 const ROOT = __dirname;
@@ -16,6 +16,8 @@ const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 const CODING_QUOTA_CONFIG_PATH = path.join(APPDATA, "coding-quota-bar", "config.json");
 const ZAI_CODING_API_BASE = "https://api.z.ai";
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
+const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
+const dnsFallbackCache = new Map();
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -181,9 +183,35 @@ function readBody(req) {
   });
 }
 
-function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000) {
+function resolveHostViaPowerShell(hostname) {
+  if (process.platform !== "win32" || !/^[a-z0-9.-]+$/i.test(hostname)) return "";
+  const cached = dnsFallbackCache.get(hostname);
+  if (cached && Date.now() - cached.at < DNS_FALLBACK_TTL_MS) return cached.address;
+  const safeHost = hostname.replace(/'/g, "''");
+  const command = [
+    "$ErrorActionPreference='SilentlyContinue';",
+    `(Resolve-DnsName -Name '${safeHost}' -Type A |`,
+    "Where-Object { $_.IPAddress } |",
+    "Select-Object -First 1 -ExpandProperty IPAddress)",
+  ].join(" ");
+  try {
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", command], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 8000,
+    });
+    const address = String(output || "").trim().split(/\s+/).find((item) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(item)) || "";
+    if (address) dnsFallbackCache.set(hostname, { address, at: Date.now() });
+    return address;
+  } catch {
+    return "";
+  }
+}
+
+function requestTextOnce(method, targetUrl, body = "", headers = {}, timeout = 30000, extraOptions = {}) {
   return new Promise((resolve) => {
-    const target = new URL(targetUrl);
+    const target = targetUrl instanceof URL ? targetUrl : new URL(targetUrl);
     const transport = target.protocol === "https:" ? https : http;
     const requestHeaders = { ...headers };
     if (body && !requestHeaders["content-length"]) {
@@ -196,6 +224,7 @@ function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000
         method,
         headers: requestHeaders,
         timeout,
+        ...extraOptions,
       },
       (res) => {
         const chunks = [];
@@ -221,6 +250,22 @@ function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000
     });
     if (body) req.write(body);
     req.end();
+  });
+}
+
+async function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000) {
+  const target = new URL(targetUrl);
+  const first = await requestTextOnce(method, target, body, headers, timeout);
+  if (first.ok || !/ENOTFOUND|EAI_AGAIN/i.test(String(first.error || ""))) return first;
+
+  const fallbackIp = resolveHostViaPowerShell(target.hostname);
+  if (!fallbackIp) return first;
+
+  const fallbackUrl = new URL(target.href);
+  fallbackUrl.hostname = fallbackIp;
+  const fallbackHeaders = { ...headers, host: target.host };
+  return requestTextOnce(method, fallbackUrl, body, fallbackHeaders, timeout, {
+    servername: target.hostname,
   });
 }
 
@@ -450,6 +495,13 @@ function quotaValueLabel(used, total) {
   return "--";
 }
 
+function quotaUsageLabel(used, total) {
+  const usedText = String(Math.round(Number(used || 0)));
+  const totalNumber = Number(total || 0);
+  if (totalNumber > 0) return `${usedText} / ${Math.round(totalNumber)}`;
+  return usedText;
+}
+
 function zaiQuotaLabel(item = {}) {
   if (item.type === "TOKENS_LIMIT" && Number(item.unit) === 3) return "5小时额度";
   if (item.type === "TIME_LIMIT") return "MCP额度";
@@ -482,6 +534,8 @@ function zaiQuotaItems(limits = [], usageResp = null) {
     const total = zaiLimitTotal(item, used, pct);
     const resetAt = item?.nextResetTime ? formatResetTime(item.nextResetTime) : "";
     const remaining = Math.max(0, 100 - Math.round(pct));
+    const remainingLabel = `剩余 ${remaining}%`;
+    const resetLabel = resetAt ? `${resetAt} 重置` : "";
     return {
       key: zaiQuotaKey(item, index),
       label: zaiQuotaLabel(item),
@@ -489,7 +543,11 @@ function zaiQuotaItems(limits = [], usageResp = null) {
       value: used,
       total,
       valueLabel: quotaValueLabel(used, total),
-      detail: `剩余 ${remaining}%${resetAt ? ` · ${resetAt} 重置` : ""}`,
+      usageLabel: quotaUsageLabel(used, total),
+      rawValueLabel: quotaUsageLabel(used, total),
+      remainingLabel,
+      resetLabel,
+      detail: `${remainingLabel}${resetLabel ? ` · ${resetLabel}` : ""}`,
       pct: Math.max(4, Math.round(pct)),
       resetAt,
     };
@@ -511,11 +569,30 @@ function readCodingQuotaConfig() {
   }
 }
 
+function readWindowsUserEnv(name) {
+  if (process.platform !== "win32") return "";
+  try {
+    const output = execFileSync("reg", ["query", "HKCU\\Environment", "/v", name], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const line = output.split(/\r?\n/).find((item) => item.includes(name));
+    const parts = String(line || "").trim().split(/\s{2,}/);
+    return parts.length >= 3 ? parts.slice(2).join(" ").trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 function enabledZaiAccounts() {
   const config = readCodingQuotaConfig();
   const accounts = (config.providers?.zhipu?.accounts || [])
-    .filter((account) => account?.enabled && String(account.apiKey || "").trim());
-  const envKey = String(process.env.Z_AI_API_KEY || "").trim();
+    .filter((account) => {
+      const apiKey = String(account?.apiKey || "").trim();
+      return account?.enabled && apiKey && !apiKey.startsWith("enc:");
+    });
+  const envKey = String(process.env.Z_AI_API_KEY || readWindowsUserEnv("Z_AI_API_KEY") || "").trim();
   if (envKey) {
     accounts.push({ enabled: true, apiKey: envKey, label: "env" });
   }
@@ -528,12 +605,13 @@ async function fetchZaiQuotaForAccount(account) {
     accept: "application/json",
     "user-agent": "opentoken-island/0.1",
   };
-  const quotaResp = await requestText(
+  const quotaResp = await requestTextWithRetry(
     "GET",
     `${ZAI_CODING_API_BASE}/api/monitor/usage/quota/limit`,
     "",
     headers,
-    8000
+    30000,
+    2
   );
 
   if (!quotaResp.ok || quotaResp.json?.code !== 200 || !Array.isArray(quotaResp.json?.data?.limits)) {
@@ -543,17 +621,18 @@ async function fetchZaiQuotaForAccount(account) {
 
   const now = new Date();
   const oneDayAgo = new Date(now.getTime() - 86400000);
-  const usageResp = await requestText(
+  const usageResp = await requestTextWithRetry(
     "GET",
     `${ZAI_CODING_API_BASE}/api/monitor/usage/model-usage?startTime=${encodeURIComponent(formatZaiDateTime(oneDayAgo))}&endTime=${encodeURIComponent(formatZaiDateTime(now))}`,
     "",
     headers,
-    8000
+    30000,
+    2
   );
 
   const items = zaiQuotaItems(quotaResp.json.data.limits, usageResp);
   const primary = items.find((item) => item.key === "glm-5h") || items[0];
-  const level = quotaResp.json.data.level ? ` · ${String(quotaResp.json.data.level).toUpperCase()}` : "";
+  const levelLabel = quotaResp.json.data.level ? String(quotaResp.json.data.level).toUpperCase() : "";
 
   return {
     key: "glm",
@@ -562,7 +641,8 @@ async function fetchZaiQuotaForAccount(account) {
     value: primary?.value || 0,
     total: primary?.total || 0,
     valueLabel: primary?.valueLabel || "--",
-    detail: `${primary?.detail || "额度已读取"}${level}`,
+    detail: primary?.detail || "额度已读取",
+    levelLabel,
     pct: Math.max(4, ...items.map((item) => Number(item.pct || 0))),
     items,
   };
