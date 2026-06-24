@@ -141,13 +141,16 @@ assert.match(popoverHtml, /renderQuotaItems/, "Popover quota cards must render n
 assert.match(popoverHtml, /quota-items/, "Popover quota UI should support multiple rows per provider");
 assert.match(popoverHtml, /renderGlmQuotaCard/, "Popover should render one focused GLM quota card");
 assert.match(popoverHtml, /quota-card-wide/, "GLM quota card should span the panel width");
-assert.match(popoverHtml, /usageLabel|rawValueLabel/, "Quota rows should show Coding Quota Bar style raw usage values");
+assert.match(popoverHtml, /quotaRemainingText/, "Quota rows should emphasize the remaining percentage");
+assert.doesNotMatch(popoverHtml, /item\.usageLabel\s*\|\|\s*item\.rawValueLabel\s*\|\|\s*item\.valueLabel/, "Quota rows should not repeat raw used/total values beside the remaining percentage");
 assert.match(popoverHtml, /5小时额度/, "Popover should show the five-hour quota bucket");
 assert.match(popoverHtml, /MCP额度/, "Popover should show the Z.ai MCP quota bucket");
 assert.match(popoverHtml, /重置/, "Popover should show reset time details from Coding Quota Bar");
 assert.match(popoverHtml, /\.bar\{display:block/, "Quota and tool progress bars should render as real horizontal bars");
 assert.match(popoverHtml, /function visibleTools/, "Popover should filter temporarily hidden tools before rendering");
+assert.match(popoverHtml, /function visibleBadges/, "Popover should filter temporarily hidden badge labels before rendering");
 assert.match(popoverHtml, /!\s*\/\^codex\$\/i\.test/, "Codex tool usage should be hidden from the panel for now");
+assert.match(popoverHtml, /!\s*\/codex\/i\.test/, "Codex badge text should be hidden from the panel for now");
 assert.doesNotMatch(popoverHtml, /Codex Main/, "Static badge placeholders should not flash Codex while it is hidden");
 assert.doesNotMatch(popoverHtml, /label: 'Codex'/, "Codex quota fallback should be hidden for now");
 assert.doesNotMatch(popoverHtml, /Codex[\s\S]{0,80}周额度/, "Codex quota card should be hidden for now");
