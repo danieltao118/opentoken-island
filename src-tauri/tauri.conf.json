@@ -14,6 +14,6 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
-    "resources": ["../server.js", "../assets"]
+    "resources": ["../server.js", "../index.html", "../island.html", "../popover.html", "../assets"]
   }
 }

@@ -224,6 +224,23 @@ function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000
   });
 }
 
+function retryableNetworkFailure(result) {
+  const errorText = String(result?.error || result?.message || "");
+  return result?.status === 0
+    || /ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|timed out/i.test(errorText)
+    || [408, 429, 500, 502, 503, 504].includes(Number(result?.status || 0));
+}
+
+async function requestTextWithRetry(method, targetUrl, body = "", headers = {}, timeout = 30000, attempts = 3) {
+  let result = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    result = await requestText(method, targetUrl, body, headers, timeout);
+    if (!retryableNetworkFailure(result) || attempt === attempts - 1) return result;
+    await sleep(450 * (attempt + 1));
+  }
+  return result;
+}
+
 function safeJson(text) {
   try {
     return JSON.parse(text);
@@ -383,14 +400,32 @@ function zaiFailureReason(message = "") {
   return "read";
 }
 
-function quotaFeedUnavailable(key, label, reason = "waiting") {
+function quotaUnavailableState(reason = "waiting") {
   const states = {
     "not-connected": { valueLabel: "未配置", detail: "前往 Coding Quota Bar 绑定 Z.ai" },
     auth: { valueLabel: "API Key 失效", detail: "请在 Coding Quota Bar 更新密钥" },
     read: { valueLabel: "无法读取额度", detail: "Z.ai 接口暂不可用" },
     waiting: { valueLabel: "--", detail: "等待额度上报" },
   };
-  const state = states[reason] || states.waiting;
+  return states[reason] || states.waiting;
+}
+
+function quotaItemUnavailable(key, label, reason = "waiting") {
+  const state = quotaUnavailableState(reason);
+  return {
+    key,
+    label,
+    status: reason === "waiting" ? "waiting" : "error",
+    value: 0,
+    total: 0,
+    valueLabel: state.valueLabel,
+    detail: state.detail,
+    pct: 4,
+  };
+}
+
+function quotaFeedUnavailable(key, label, reason = "waiting", items = []) {
+  const state = quotaUnavailableState(reason);
   return {
     key,
     label,
@@ -398,7 +433,74 @@ function quotaFeedUnavailable(key, label, reason = "waiting") {
     valueLabel: state.valueLabel,
     detail: state.detail,
     pct: 4,
+    items: items.length ? items : [quotaItemUnavailable(`${key}-main`, label, reason)],
   };
+}
+
+function zaiQuotaUnavailable(reason = "waiting") {
+  return quotaFeedUnavailable("glm", "GLM / Z.ai", reason, [
+    quotaItemUnavailable("glm-5h", "5小时额度", reason),
+    quotaItemUnavailable("glm-mcp", "MCP额度", reason),
+  ]);
+}
+
+function quotaValueLabel(used, total) {
+  if (total > 0) return `${formatCount(used)} / ${formatCount(total)}`;
+  if (used > 0) return formatCount(used);
+  return "--";
+}
+
+function zaiQuotaLabel(item = {}) {
+  if (item.type === "TOKENS_LIMIT" && Number(item.unit) === 3) return "5小时额度";
+  if (item.type === "TIME_LIMIT") return "MCP额度";
+  if (item.type === "TOKENS_LIMIT") return "周额度";
+  return String(item.type || "额度");
+}
+
+function zaiQuotaKey(item = {}, index = 0) {
+  if (item.type === "TOKENS_LIMIT" && Number(item.unit) === 3) return "glm-5h";
+  if (item.type === "TIME_LIMIT") return "glm-mcp";
+  if (item.type === "TOKENS_LIMIT") return "glm-weekly";
+  return `glm-${index}`;
+}
+
+function zaiLimitTotal(item = {}, used = 0, pct = 0) {
+  const explicitTotal = Number(item.total ?? item.limit ?? item.maxValue ?? item.usage ?? 0);
+  const totalByRate = pct > 0 && used > 0 ? Math.round(used / (pct / 100)) : 0;
+  return Math.max(used, Number.isFinite(explicitTotal) ? explicitTotal : 0, totalByRate);
+}
+
+function zaiQuotaItems(limits = [], usageResp = null) {
+  const modelCalls = Number(usageResp?.json?.data?.totalUsage?.totalModelCallCount);
+  const items = limits.map((item, index) => {
+    const pct = clampPercent(item?.percentage || 0);
+    let used = Number(item?.currentValue ?? item?.used ?? 0);
+    if (item?.type === "TOKENS_LIMIT" && Number.isFinite(modelCalls) && modelCalls > 0) {
+      used = modelCalls;
+    }
+    if (!Number.isFinite(used)) used = 0;
+    const total = zaiLimitTotal(item, used, pct);
+    const resetAt = item?.nextResetTime ? formatResetTime(item.nextResetTime) : "";
+    const remaining = Math.max(0, 100 - Math.round(pct));
+    return {
+      key: zaiQuotaKey(item, index),
+      label: zaiQuotaLabel(item),
+      status: "ok",
+      value: used,
+      total,
+      valueLabel: quotaValueLabel(used, total),
+      detail: `剩余 ${remaining}%${resetAt ? ` · ${resetAt} 重置` : ""}`,
+      pct: Math.max(4, Math.round(pct)),
+      resetAt,
+    };
+  });
+
+  const fiveHour = items.find((item) => item.key === "glm-5h");
+  const mcp = items.find((item) => item.key === "glm-mcp");
+  return [
+    fiveHour || quotaItemUnavailable("glm-5h", "5小时额度", "waiting"),
+    mcp || quotaItemUnavailable("glm-mcp", "MCP额度", "waiting"),
+  ];
 }
 
 function readCodingQuotaConfig() {
@@ -436,7 +538,7 @@ async function fetchZaiQuotaForAccount(account) {
 
   if (!quotaResp.ok || quotaResp.json?.code !== 200 || !Array.isArray(quotaResp.json?.data?.limits)) {
     const message = quotaResp.json?.msg || quotaResp.error || "quota read failed";
-    return quotaFeedUnavailable("glm", "GLM / Z.ai", zaiFailureReason(message));
+    return zaiQuotaUnavailable(zaiFailureReason(message));
   }
 
   const now = new Date();
@@ -449,37 +551,30 @@ async function fetchZaiQuotaForAccount(account) {
     8000
   );
 
-  const tokenLimit = quotaResp.json.data.limits.find((item) => item.type === "TOKENS_LIMIT")
-    || quotaResp.json.data.limits[0];
-  const usageRate = clampPercent(tokenLimit?.percentage || 0);
-  const modelCalls = Number(usageResp.json?.data?.totalUsage?.totalModelCallCount);
-  const currentValue = Number(tokenLimit?.currentValue || 0);
-  const used = Number.isFinite(modelCalls) && modelCalls > 0 ? modelCalls : currentValue;
-  const totalByRate = usageRate > 0 ? Math.round(used / (usageRate / 100)) : 0;
-  const total = Math.max(used, totalByRate, Number(tokenLimit?.usage || 0));
-  const remaining = Math.max(0, 100 - Math.round(usageRate));
-  const resetAt = tokenLimit?.nextResetTime ? formatResetTime(tokenLimit.nextResetTime) : "";
+  const items = zaiQuotaItems(quotaResp.json.data.limits, usageResp);
+  const primary = items.find((item) => item.key === "glm-5h") || items[0];
   const level = quotaResp.json.data.level ? ` · ${String(quotaResp.json.data.level).toUpperCase()}` : "";
 
   return {
     key: "glm",
     label: account.label ? `GLM / Z.ai · ${account.label}` : "GLM / Z.ai",
     status: "ok",
-    value: used,
-    total,
-    valueLabel: total > 0 ? `${formatCount(used)} / ${formatCount(total)}` : formatCount(used),
-    detail: `剩余 ${remaining}%${resetAt ? ` · ${resetAt} 重置` : ""}${level}`,
-    pct: Math.max(4, Math.round(usageRate)),
+    value: primary?.value || 0,
+    total: primary?.total || 0,
+    valueLabel: primary?.valueLabel || "--",
+    detail: `${primary?.detail || "额度已读取"}${level}`,
+    pct: Math.max(4, ...items.map((item) => Number(item.pct || 0))),
+    items,
   };
 }
 
 async function fetchZaiQuota() {
   const accounts = enabledZaiAccounts();
   if (!accounts.length) {
-    return quotaFeedUnavailable("glm", "GLM / Z.ai", "not-connected");
+    return zaiQuotaUnavailable("not-connected");
   }
 
-  let lastError = quotaFeedUnavailable("glm", "GLM / Z.ai", "read");
+  let lastError = zaiQuotaUnavailable("read");
   for (const account of accounts) {
     const result = await fetchZaiQuotaForAccount(account);
     if (result.status === "ok") return result;
@@ -498,14 +593,44 @@ async function cachedZaiQuota() {
   } catch {
     quotaCache = {
       at: Date.now(),
-      zai: quotaFeedUnavailable("glm", "GLM / Z.ai", "read"),
+      zai: zaiQuotaUnavailable("read"),
     };
   }
   return quotaCache.zai;
 }
 
+function codexQuotaItems(byTool = {}) {
+  const used = Number(byTool.codex || 0);
+  const usageDetail = used > 0
+    ? `今日 OpenToken 已上报 ${formatCount(used)}`
+    : "等待今日 Codex 上报";
+  return [
+    {
+      key: "codex-5h",
+      label: "5小时额度",
+      status: "waiting",
+      value: 0,
+      total: 0,
+      valueLabel: "待接入",
+      detail: `${usageDetail} · 需要 Codex 可读限额源`,
+      pct: 4,
+    },
+    {
+      key: "codex-weekly",
+      label: "周额度",
+      status: "waiting",
+      value: 0,
+      total: 0,
+      valueLabel: "待接入",
+      detail: "等待 Codex 周额度来源",
+      pct: 4,
+    },
+  ];
+}
+
 function codexQuotaFromTools(byTool = {}, total = 0) {
   const used = Number(byTool.codex || 0);
+  const items = codexQuotaItems(byTool);
   const share = total > 0 ? used / total : 0;
   if (used > 0) {
     return {
@@ -517,6 +642,7 @@ function codexQuotaFromTools(byTool = {}, total = 0) {
       valueLabel: formatCount(used),
       detail: `今日 OpenToken 占比 ${formatPercent(share)}`,
       pct: Math.max(4, Math.round(share * 100)),
+      items,
     };
   }
   return {
@@ -528,6 +654,7 @@ function codexQuotaFromTools(byTool = {}, total = 0) {
     valueLabel: "--",
     detail: "等待今日 Codex 上报",
     pct: 4,
+    items,
   };
 }
 
@@ -681,7 +808,7 @@ async function refreshLeaderboard(summary, previousRank = null) {
   let lastResult = null;
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await requestText("GET", endpoint, "", { accept: "application/json" });
+    const result = await requestTextWithRetry("GET", endpoint, "", { accept: "application/json" }, 15000, 2);
     lastResult = result;
     const entries = Array.isArray(result.json?.entries) ? result.json.entries : [];
     const own = findOwnEntry(entries, summary);
@@ -702,6 +829,7 @@ async function refreshLeaderboard(summary, previousRank = null) {
         board: "total",
         range: "today",
         entriesCount: entries.length,
+        leaderboardMatched: true,
         own,
         previous,
         next,
@@ -721,10 +849,69 @@ async function refreshLeaderboard(summary, previousRank = null) {
     board: "total",
     range: "today",
     entriesCount: Array.isArray(lastResult?.json?.entries) ? lastResult.json.entries.length : 0,
+    leaderboardMatched: false,
     error: lastResult?.error || "Current upload was not found in leaderboard yet",
   };
   saveState();
   return state.leaderboard;
+}
+
+function buildSyncStatus(uploadSummary, board) {
+  const upstream = state.lastUpload?.upstream || {};
+  const accepted = upstream.json?.accepted ?? null;
+  const uploaded = Boolean(upstream.ok);
+  const leaderboardMatched = Boolean(board?.own || board?.leaderboardMatched);
+  const entriesCount = Number(board?.entriesCount || 0);
+
+  if (!uploadSummary) {
+    return {
+      status: "waiting",
+      label: "等待上报",
+      detail: "尚未捕获 OpenToken 上传数据",
+      uploaded: false,
+      leaderboardMatched: false,
+      accepted,
+      entriesCount,
+    };
+  }
+
+  if (leaderboardMatched) {
+    return {
+      status: "leaderboard",
+      label: "已同步榜单",
+      detail: `已上报${accepted !== null ? ` ${accepted} 条` : ""}，并匹配到排行榜`,
+      uploaded: true,
+      leaderboardMatched: true,
+      accepted,
+      entriesCount,
+    };
+  }
+
+  if (uploaded) {
+    const leaderboardError = board?.error ? String(board.error) : "";
+    const detail = leaderboardError && entriesCount === 0
+      ? `已同步${accepted !== null ? ` ${accepted} 条记录` : "数据"}；排行榜刷新暂时失败：${leaderboardError}`
+      : `已同步${accepted !== null ? ` ${accepted} 条记录` : "数据"}；排行榜仅返回前 ${entriesCount || 0} 名，暂未返回当前账号`;
+    return {
+      status: "uploaded-not-ranked",
+      label: "已上报",
+      detail,
+      uploaded: true,
+      leaderboardMatched: false,
+      accepted,
+      entriesCount,
+    };
+  }
+
+  return {
+    status: "upload-error",
+    label: "上报失败",
+    detail: upstream.error || upstream.body || "OpenToken 上传未成功",
+    uploaded: false,
+    leaderboardMatched: false,
+    accepted,
+    entriesCount,
+  };
 }
 
 async function buildSummary() {
@@ -740,6 +927,7 @@ async function buildSummary() {
   const lead = Number(board?.leadOverNext || 0);
   const tools = toolsFromMap(byTool);
   const quotas = await quotaFeeds(byTool, total);
+  const sync = buildSyncStatus(uploadSummary, board);
   const game = buildGame({
     total,
     rank,
@@ -755,6 +943,9 @@ async function buildSummary() {
     ok: true,
     waiting: !uploadSummary,
     source: own ? "leaderboard" : uploadSummary ? "upload" : "waiting",
+    sync,
+    syncLabel: sync.label,
+    leaderboardMatched: sync.leaderboardMatched,
     capturedAt: state.lastUpload?.capturedAt || "",
     leaderboardUpdatedAt: board?.updatedAt || "",
     date: uploadSummary?.date || "",
@@ -828,11 +1019,11 @@ async function handleUploadProxy(req, res, url) {
     rowCount: summary.rowCount,
   });
 
-  const upstream = await requestText("POST", upstreamUrl, body, {
+  const upstream = await requestTextWithRetry("POST", upstreamUrl, body, {
     "content-type": req.headers["content-type"] || "application/json",
     "accept": req.headers.accept || "application/json",
     "user-agent": req.headers["user-agent"] || "opentoken-island/0.1",
-  });
+  }, 30000, 4);
 
   state.lastUpload.upstream = {
     status: upstream.status,
@@ -912,10 +1103,11 @@ async function handleApi(req, res, url) {
 
 async function serviceStatus() {
   const result = await run(OPENTOKEN, ["service", "status"], 15000);
+  const text = (result.stdout || result.stderr || result.message).trim();
   return {
     ok: result.ok,
-    text: (result.stdout || result.stderr || result.message).trim(),
-    running: /running|loaded|已运行|active/i.test(result.stdout + result.stderr),
+    text,
+    running: result.ok && /running|loaded|已运行|active|Ready|准备|就绪|OpenToken/i.test(text),
   };
 }
 
