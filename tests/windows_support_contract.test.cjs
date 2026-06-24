@@ -147,10 +147,12 @@ assert.match(popoverHtml, /5小时额度/, "Popover should show the five-hour qu
 assert.match(popoverHtml, /MCP额度/, "Popover should show the Z.ai MCP quota bucket");
 assert.match(popoverHtml, /重置/, "Popover should show reset time details from Coding Quota Bar");
 assert.match(popoverHtml, /\.bar\{display:block/, "Quota and tool progress bars should render as real horizontal bars");
-assert.match(popoverHtml, /function visibleTools/, "Popover should filter temporarily hidden tools before rendering");
-assert.match(popoverHtml, /function visibleBadges/, "Popover should filter temporarily hidden badge labels before rendering");
-assert.match(popoverHtml, /!\s*\/\^codex\$\/i\.test/, "Codex tool usage should be hidden from the panel for now");
-assert.match(popoverHtml, /!\s*\/codex\/i\.test/, "Codex badge text should be hidden from the panel for now");
+assert.doesNotMatch(popoverHtml, /visibleTools\(data\.tools\)/, "Tool usage rows should show every tracked agent, including Codex");
+assert.doesNotMatch(popoverHtml, /!\s*\/\^codex\$\/i\.test/, "Codex usage should not be filtered out of agent usage stats");
+assert.match(popoverHtml, /id="pauseButton"/, "Pause button should have an explicit behavior hook");
+assert.match(popoverHtml, /function toggleRefreshPause/, "Pause button should pause and resume panel auto-refresh");
+assert.match(popoverHtml, /id="logButton"/, "Log icon button should have an explicit behavior hook");
+assert.match(popoverHtml, /function openLogs/, "Log icon button should open the local event log");
 assert.doesNotMatch(popoverHtml, /Codex Main/, "Static badge placeholders should not flash Codex while it is hidden");
 assert.doesNotMatch(popoverHtml, /label: 'Codex'/, "Codex quota fallback should be hidden for now");
 assert.doesNotMatch(popoverHtml, /Codex[\s\S]{0,80}周额度/, "Codex quota card should be hidden for now");
@@ -194,6 +196,8 @@ assert.match(serverJs, /servername: target\.hostname/, "DNS fallback must keep t
 assert.match(serverJs, /DNS_FALLBACK_TTL_MS/, "Windows DNS fallback should be cached between quota refreshes");
 assert.match(serverJs, /quota\/limit[\s\S]*30000,\s*2/, "Z.ai quota reads need enough timeout for DNS fallback");
 assert.match(serverJs, /requestTextWithRetry\([\s\S]*quota\/limit/, "Z.ai quota reads should use retry logic");
+assert.match(serverJs, /\/api\/open-logs/, "Server should expose an API endpoint for the log icon button");
+assert.match(serverJs, /function openLogsFile/, "Server should open the local OpenToken Island event log");
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");
 assert.match(serverJs, /leaderboardMatched/, "Sync state must distinguish uploaded data from leaderboard matches");
 assert.match(serverJs, /排行榜仅返回前/, "Sync detail should explain when the current account is not in the returned leaderboard page");

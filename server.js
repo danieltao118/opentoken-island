@@ -175,6 +175,31 @@ function run(cmd, args, timeout = 30000) {
   });
 }
 
+function openLogsFile() {
+  return new Promise((resolve) => {
+    try {
+      fs.mkdirSync(path.dirname(EVENT_LOG_PATH), { recursive: true });
+      fs.closeSync(fs.openSync(EVENT_LOG_PATH, "a"));
+    } catch (error) {
+      return resolve({ ok: false, error: error.message, path: EVENT_LOG_PATH });
+    }
+
+    const opener = process.platform === "win32"
+      ? { cmd: "cmd", args: ["/c", "start", "", EVENT_LOG_PATH] }
+      : process.platform === "darwin"
+        ? { cmd: "open", args: [EVENT_LOG_PATH] }
+        : { cmd: "xdg-open", args: [EVENT_LOG_PATH] };
+
+    execFile(opener.cmd, opener.args, { windowsHide: true }, (error) => {
+      resolve({
+        ok: !error,
+        error: error ? error.message : "",
+        path: EVENT_LOG_PATH,
+      });
+    });
+  });
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -1172,6 +1197,11 @@ async function handleApi(req, res, url) {
       account: accountStatus(),
       service: await serviceStatus(),
     });
+  }
+
+  if (url.pathname === "/api/open-logs") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
+    return json(res, 200, await openLogsFile());
   }
 
   if (url.pathname === "/api/service") {
