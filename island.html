@@ -58,7 +58,6 @@
     const trackFillEl = document.getElementById('trackFill');
     fetch('/api/summary').then((response) => response.json()).then((data) => {
       if (!data.ok) return;
-      const game = data.game || {};
       titleEl.textContent = `今日 ${data.totalLabel || '--'} token`;
       if (data.rank === 1) {
         copyEl.textContent = `守住第 1，领先 ${data.nextName || '第 2 名'} ${data.leadOverNextLabel || '0'}。`;
@@ -66,8 +65,9 @@
         copyEl.textContent = `当前 ${data.rankLabel || '#--'}，距 ${data.previousName || '上一名'} ${data.gapToPreviousLabel || '0'}。`;
       }
       metricEl.textContent = data.rankLabel || '#--';
-      metaEl.textContent = game.mainTool ? game.mainTool.label : 'live';
-      trackFillEl.style.width = Math.max(4, game.xpPct || 0) + '%';
+      const tools = Array.isArray(data.tools) ? data.tools : [];
+      metaEl.textContent = tools[0] ? tools[0].label : 'live';
+      trackFillEl.style.width = Math.max(4, Math.min(100, Number(data.rankProgressPct || 0))) + '%';
     }).catch(() => {});
   </script>
 </body>

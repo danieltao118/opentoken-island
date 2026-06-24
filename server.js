@@ -947,106 +947,40 @@ function rankedTools(byTool = {}, total = 0) {
     .sort((a, b) => b.value - a.value);
 }
 
-function buildGame({ total, rank, rankDelta, byTool, previous, next, gap, lead }) {
-  const levelSize = 25_000_000;
-  const highOutputTarget = 300_000_000;
-  const toolRanks = rankedTools(byTool, total);
-  const mainTool = toolRanks[0] || { name: "", label: "Main Tool", icon: "terminal", value: 0, share: 0 };
-  const runnerUpTool = toolRanks[1] || null;
-  const mainLead = runnerUpTool ? Math.max(0, mainTool.value - runnerUpTool.value) : mainTool.value;
+function buildRankFacts({ rank, previous, next, gap, lead, sync }) {
   const accepted = Number(state.lastUpload?.upstream?.json?.accepted || 0);
-  const level = Math.max(1, Math.floor(total / levelSize) + 1);
-  const xp = total > 0 ? total % levelSize : 0;
-  const xpPct = Math.max(4, Math.round((xp / levelSize) * 100));
-  const scoreDone = total >= highOutputTarget;
-  const king = rank === 1;
-  const rankQuest = king
-    ? {
-        icon: "crown",
-        title: "王座守护：今日总榜第 1",
-        detail: next ? `领先 ${next.name} ${formatCount(lead)}` : "当前无人追近",
-        rewardLabel: "+800",
-        done: true,
-      }
-    : {
-        icon: "trending-up",
-        title: "排名冲刺：超过上一名",
-        detail: previous ? `距 ${previous.name} 还差 ${formatCount(gap)}` : "等待榜单排名",
-        rewardLabel: "+800",
-        done: false,
-      };
+  const matched = Boolean(sync?.leaderboardMatched);
+  const rankValue = rank ? `#${rank}` : "#--";
+  const gapLabel = rank === 1 ? formatCount(lead) : rank ? formatCount(gap) : "--";
+  const gapDetail = rank === 1
+    ? (next?.name ? `领先 ${next.name}` : "榜单暂无下一名")
+    : (previous?.name ? `距 ${previous.name}` : "等待榜单匹配");
 
   return {
-    level,
-    levelTitle: `Builder Lv. ${level}`,
-    xp,
-    xpMax: levelSize,
-    xpPct,
-    xpLabel: `${formatCount(xp)} / ${formatCount(levelSize)} XP`,
-    codexShare: total > 0 ? Number(byTool.codex || 0) / total : 0,
-    codexShareLabel: formatPercent(total > 0 ? Number(byTool.codex || 0) / total : 0),
-    mainTool: {
-      name: mainTool.name,
-      label: mainTool.label,
-      value: mainTool.value,
-      valueLabel: formatCount(mainTool.value),
-      share: mainTool.share,
-      shareLabel: formatPercent(mainTool.share),
-      leadLabel: formatCount(mainLead),
-    },
-    quests: [
-      rankQuest,
+    source: matched ? "leaderboard" : "upload",
+    items: [
       {
-        icon: "target",
-        title: "每日任务：冲到 3 亿",
-        detail: `${formatCount(total)} / ${formatCount(highOutputTarget)}`,
-        rewardLabel: "+620",
-        done: scoreDone,
+        key: "rank",
+        label: "当前排名",
+        valueLabel: rankValue,
+        detail: matched ? "来自今日排行榜" : "等待排行榜匹配",
+        status: matched ? "ok" : "waiting",
       },
       {
-        icon: mainTool.icon,
-        title: `主力工具：${mainTool.label} Main`,
-        detail: runnerUpTool
-          ? `领先 ${runnerUpTool.label} ${formatCount(mainLead)}`
-          : `${formatPercent(mainTool.share)} share`,
-        rewardLabel: "+240",
-        done: mainTool.value > 0,
+        key: rank === 1 ? "lead" : "gap",
+        label: rank === 1 ? "领先下一名" : "距上一名",
+        valueLabel: gapLabel,
+        detail: gapDetail,
+        status: matched ? "ok" : "waiting",
+      },
+      {
+        key: "accepted",
+        label: "上报接收",
+        valueLabel: accepted ? `${accepted} 条` : "--",
+        detail: sync?.label || "等待上传",
+        status: accepted ? "ok" : "waiting",
       },
     ],
-    badges: [
-      {
-        icon: "crown",
-        title: "King Mode",
-        detail: king ? "今日总榜 #1" : rank ? `当前 #${rank}` : "等待排名",
-        unlocked: king,
-        featured: king,
-      },
-      {
-        icon: "flame",
-        title: "High Output",
-        detail: `${formatCount(total)} / ${formatCount(highOutputTarget)}`,
-        unlocked: scoreDone,
-        featured: scoreDone && !king,
-      },
-      {
-        icon: mainTool.icon,
-        title: `${mainTool.label} Main`,
-        detail: `${formatPercent(mainTool.share)} share`,
-        unlocked: mainTool.value > 0,
-        featured: false,
-      },
-      {
-        icon: "trending-up",
-        title: "Rank Climber",
-        detail: rankDelta > 0 ? `上升 ${rankDelta} 名` : king ? "守住第 1" : "等待突破",
-        unlocked: rankDelta > 0 || king,
-        featured: false,
-      },
-    ],
-    sync: {
-      accepted,
-      done: accepted > 0,
-    },
   };
 }
 
@@ -1211,16 +1145,12 @@ async function buildSummary() {
   const trends = usageTrends(quotas);
   const quotaAudit = buildQuotaAudit(byTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
-  const game = buildGame({
-    total,
-    rank,
-    rankDelta: Number(board?.rankDelta || 0),
-    byTool,
-    previous,
-    next,
-    gap,
-    lead,
-  });
+  const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync });
+  const rankProgressPct = previous?.score
+    ? Math.max(4, Math.min(100, Math.round((total / Number(previous.score || 1)) * 100)))
+    : rank === 1
+      ? 100
+      : 4;
 
   return {
     ok: true,
@@ -1236,7 +1166,6 @@ async function buildSummary() {
     totalLabel: uploadSummary ? formatCount(total) : "--",
     rank,
     rankLabel: rank ? `#${rank}` : "#--",
-    rankDelta: Number(board?.rankDelta || 0),
     previousName: previous?.name || "",
     previousScore: Number(previous?.score || 0),
     nextName: next?.name || "",
@@ -1246,11 +1175,8 @@ async function buildSummary() {
     leadOverNext: lead,
     leadOverNextLabel: formatCount(lead),
     nextRankGap: gap,
-    xp: game.xp,
-    xpMax: game.xpMax,
-    game,
-    quests: game.quests,
-    badges: game.badges,
+    rankProgressPct,
+    rankFacts,
     tools,
     quotaFeeds: quotas,
     usageTrends: trends,

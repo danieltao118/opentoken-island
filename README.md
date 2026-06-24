@@ -6,7 +6,7 @@ It combines:
 
 - A real macOS status bar item
 - A compact Apple-style Dynamic Island event popup
-- A popover extension panel with rank, XP, quests, and achievements
+- A popover extension panel with rank, quota, agent usage, and GLM trend data
 - Live data from the local `opentoken` CLI
 - Manual upload through `opentoken upload`
 
@@ -27,7 +27,7 @@ The installer:
 - Builds and installs `/Applications/OpenToken Island.app`
 - Registers a login LaunchAgent at `~/Library/LaunchAgents/com.opentoken.island.plist`
 
-After that, OpenToken keeps using its own upload mechanism. OpenToken Island only listens to that upload payload, forwards it to scys, and renders the latest rank/game state.
+After that, OpenToken keeps using its own upload mechanism. OpenToken Island only listens to that upload payload, forwards it to scys, and renders the latest rank, quota, and usage state.
 
 If `opentoken` is installed in a non-standard location, pass it explicitly:
 
@@ -73,6 +73,6 @@ tail -f ~/.opentoken/island-events.log
 - `server.js` - local API bridge to the `opentoken` CLI
 - `popover.html` - extension popover UI
 - `island.html` - Dynamic Island notification UI
-- `index.html` - original browser prototype kept for design review
+- `index.html` - browser dashboard backed by the same live summary API
 - `scripts/install.sh` - local installer and OpenToken detector
 - `scripts/build-pkg.sh` - macOS `.pkg` installer builder

@@ -158,12 +158,24 @@ assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful us
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
 assert.match(popoverHtml, /trend-bars/, "GLM daily, seven-day, and thirty-day stats should render as bar charts");
 assert.doesNotMatch(popoverHtml, /class="badges"|function renderBadges|function renderQuests|Hot Streak|Daily Quest/, "Low-value gamification badges and quests should not crowd out quota data");
+assert.doesNotMatch(popoverHtml, /Builder Lv|XP|class="game"|rankDelta|xpText|rankGap|level-line|battle/, "Panel must not show synthetic level, XP, or game battle data");
+assert.match(popoverHtml, /id="rankFacts"/, "Panel should replace game data with real leaderboard facts");
+assert.match(popoverHtml, /function renderRankFacts/, "Panel should render leaderboard facts from the summary payload");
 assert.doesNotMatch(popoverHtml, /Codex Main/, "Static badge placeholders should not flash Codex while it is hidden");
 assert.doesNotMatch(popoverHtml, /label: 'Codex'/, "Codex quota fallback should be hidden for now");
 assert.doesNotMatch(popoverHtml, /Codex[\s\S]{0,80}周额度/, "Codex quota card should be hidden for now");
 assert.doesNotMatch(popoverHtml, /Waiting GPT\/OpenAI rows/, "Quota UI should not show GPT/OpenAI as the Codex quota card");
 assert.doesNotMatch(popoverHtml, /[^<]\/(?:span|strong)>/, "Popover HTML must not contain malformed closing tags that corrupt layout");
 assert.doesNotMatch(popoverHtml, /\uFFFD|鎺|鐩|璇|绛|涓婃姤|浜縛|涓嘸/, "Popover must not contain mojibake strings");
+
+const islandHtml = fs.readFileSync(path.join(root, "island.html"), "utf8");
+assert.doesNotMatch(islandHtml, /data\.game|xpPct|Builder Lv|XP/, "Island notification must not depend on synthetic game or XP fields");
+assert.match(islandHtml, /rankProgressPct/, "Island progress should use real leaderboard-derived progress");
+
+const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
+assert.doesNotMatch(indexHtml, /Builder Lv|XP|rankDelta|xpText|rankGap|High Output|Codex Main|Hot Streak|216k|#17/, "Browser dashboard must not contain old synthetic demo metrics");
+assert.match(indexHtml, /renderRankFacts/, "Browser dashboard should render real leaderboard facts");
+assert.match(indexHtml, /fetch\(API \+ '\/summary'\)/, "Browser dashboard should fetch the live summary payload");
 
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
 assert.match(
@@ -224,6 +236,8 @@ assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server sho
 assert.match(serverJs, /model-usage\?startTime/, "GLM trends should use the same model-usage endpoint as Coding Quota Bar");
 assert.match(serverJs, /usageTrends/, "Summary payload should include chart-ready usage trends");
 assert.match(serverJs, /function buildQuotaAudit/, "Summary payload should explain which agents have reliable quota sources");
+assert.match(serverJs, /function buildRankFacts/, "Summary payload should expose real leaderboard facts for the panel");
+assert.doesNotMatch(serverJs, /function buildGame|Builder Lv|rewardLabel|High Output|Codex Main|xpMax|quests: game|badges: game/, "Summary must not expose synthetic game data");
 assert.match(serverJs, /glm[\s\S]*GLM \/ Z\.ai/, "GLM/Z.ai usage should have an explicit label");
 assert.match(serverJs, /codexQuotaFromTools/, "Quota feeds should expose a Codex quota card");
 assert.doesNotMatch(serverJs, /function gptQuotaFromTools/, "Quota feeds should not use the old GPT/OpenAI card");
