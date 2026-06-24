@@ -27,7 +27,7 @@ use tauri::{
 use windows_support::startup_registry_args;
 use windows_support::{
     floating_window_origin_bounded_with_anchor_gap, is_port_open, local_url, opentoken_bin,
-    server_resource_path, DEFAULT_PORT,
+    server_resource_path, should_show_panel_on_launch, DEFAULT_PORT,
 };
 
 const PANEL_LABEL: &str = "panel";
@@ -65,10 +65,14 @@ fn main() {
         .manage(ServerProcess(Mutex::new(None)))
         .manage(PanelState::new())
         .setup(|app| {
+            let show_panel_on_launch = should_show_panel_on_launch(env::args());
             ensure_startup_registration()?;
             start_server_if_needed(app.handle())?;
             prewarm_windows(app.handle())?;
             setup_tray(app.handle())?;
+            if show_panel_on_launch {
+                show_panel(app.handle())?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| match event {

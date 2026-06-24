@@ -37,6 +37,16 @@ pub fn startup_registry_args(exe: &Path) -> Vec<String> {
     ]
 }
 
+pub fn should_show_panel_on_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .skip(1)
+        .any(|arg| arg.as_ref() == "--show-panel")
+}
+
 pub fn is_port_open(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
@@ -177,6 +187,21 @@ mod tests {
             r#""C:\Program Files\OpenToken Island\opentoken-island.exe""#
         );
         assert_eq!(args[8], "/f");
+    }
+
+    #[test]
+    fn show_panel_arg_requests_panel_on_launch() {
+        let args = vec![
+            "opentoken-island.exe".to_string(),
+            "--show-panel".to_string(),
+        ];
+        assert!(should_show_panel_on_launch(args));
+    }
+
+    #[test]
+    fn default_launch_stays_tray_only() {
+        let args = vec!["opentoken-island.exe".to_string()];
+        assert!(!should_show_panel_on_launch(args));
     }
 
     #[test]
