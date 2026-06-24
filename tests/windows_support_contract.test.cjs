@@ -153,6 +153,11 @@ assert.match(popoverHtml, /id="pauseButton"/, "Pause button should have an expli
 assert.match(popoverHtml, /function toggleRefreshPause/, "Pause button should pause and resume panel auto-refresh");
 assert.match(popoverHtml, /id="logButton"/, "Log icon button should have an explicit behavior hook");
 assert.match(popoverHtml, /function openLogs/, "Log icon button should open the local event log");
+assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leaderboard score as secondary detail");
+assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
+assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
+assert.match(popoverHtml, /trend-bars/, "GLM daily, seven-day, and thirty-day stats should render as bar charts");
+assert.doesNotMatch(popoverHtml, /class="badges"|function renderBadges|function renderQuests|Hot Streak|Daily Quest/, "Low-value gamification badges and quests should not crowd out quota data");
 assert.doesNotMatch(popoverHtml, /Codex Main/, "Static badge placeholders should not flash Codex while it is hidden");
 assert.doesNotMatch(popoverHtml, /label: 'Codex'/, "Codex quota fallback should be hidden for now");
 assert.doesNotMatch(popoverHtml, /Codex[\s\S]{0,80}周额度/, "Codex quota card should be hidden for now");
@@ -209,6 +214,16 @@ assert.match(serverJs, /MCP额度/, "Server should label the Z.ai MCP quota buck
 assert.match(serverJs, /周额度/, "Server should label the weekly quota bucket");
 assert.match(serverJs, /Ready|准备|就绪|OpenToken/, "Service detection should treat a ready Windows scheduled task as healthy");
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
+assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve normalized usage per tool");
+assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
+assert.match(serverJs, /rawValueLabel/, "Tool usage rows should expose the raw leaderboard score separately");
+assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normalized effective usage separately");
+assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
+assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
+assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");
+assert.match(serverJs, /model-usage\?startTime/, "GLM trends should use the same model-usage endpoint as Coding Quota Bar");
+assert.match(serverJs, /usageTrends/, "Summary payload should include chart-ready usage trends");
+assert.match(serverJs, /function buildQuotaAudit/, "Summary payload should explain which agents have reliable quota sources");
 assert.match(serverJs, /glm[\s\S]*GLM \/ Z\.ai/, "GLM/Z.ai usage should have an explicit label");
 assert.match(serverJs, /codexQuotaFromTools/, "Quota feeds should expose a Codex quota card");
 assert.doesNotMatch(serverJs, /function gptQuotaFromTools/, "Quota feeds should not use the old GPT/OpenAI card");

@@ -396,26 +396,55 @@ function summarizeRows(rows, preferredDate = "") {
     : dates[dates.length - 1] || "";
   const dayRows = rows.filter((row) => row.date === date);
   const byTool = {};
+  const normalizedByTool = {};
   let normalized = 0;
   for (const row of dayRows) {
     const tool = normalizeToolName(row.tool || row.provider || row.client || "unknown");
+    const rowNormalized = Number(row.normalized || 0);
     byTool[tool] = (byTool[tool] || 0) + rawTokens(row);
-    normalized += Number(row.normalized || 0);
+    normalizedByTool[tool] = (normalizedByTool[tool] || 0) + rowNormalized;
+    normalized += rowNormalized;
   }
   const total = Object.values(byTool).reduce((sum, value) => sum + value, 0);
-  return { date, total, normalized, byTool, rowCount: dayRows.length };
+  return { date, total, normalized, byTool, normalizedByTool, rowCount: dayRows.length };
+}
+
+function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
+  const names = [
+    ...new Set([
+      ...Object.keys(rawByTool || {}),
+      ...Object.keys(normalizedByTool || {}),
+    ]),
+  ];
+  const hasNormalizedUsage = Object.values(normalizedByTool || {}).some((value) => Number(value || 0) > 0);
+  const entries = names
+    .map((name) => {
+      const rawValue = Number(rawByTool[name] || 0);
+      const normalizedValue = Number(normalizedByTool[name] || 0);
+      const value = hasNormalizedUsage && normalizedValue > 0 ? normalizedValue : rawValue;
+      return { name, value, rawValue, normalizedValue };
+    })
+    .filter((tool) => tool.value > 0 || tool.rawValue > 0)
+    .sort((a, b) => b.value - a.value);
+  const max = Math.max(1, ...entries.map((tool) => tool.value));
+  return entries.slice(0, 6).map(({ name, value, rawValue, normalizedValue }) => ({
+    name,
+    value,
+    rawValue,
+    normalizedValue,
+    label: toolLabel(name),
+    valueLabel: formatCount(value),
+    rawValueLabel: formatCount(rawValue),
+    normalizedLabel: normalizedValue > 0 ? formatCount(normalizedValue) : "",
+    detail: normalizedValue > 0 && rawValue > 0 && rawValue !== normalizedValue
+      ? `榜单原始 ${formatCount(rawValue)}`
+      : "",
+    pct: Math.max(4, Math.round((value / max) * 100)),
+  }));
 }
 
 function toolsFromMap(byTool = {}) {
-  const entries = Object.entries(byTool).sort((a, b) => b[1] - a[1]);
-  const max = Math.max(1, ...entries.map(([, value]) => value));
-  return entries.slice(0, 6).map(([name, value]) => ({
-    name,
-    value,
-    label: toolLabel(name),
-    valueLabel: formatCount(value),
-    pct: Math.max(4, Math.round((value / max) * 100)),
-  }));
+  return toolsFromUsageMaps(byTool, {});
 }
 
 function toolLabel(name) {
@@ -586,6 +615,90 @@ function zaiQuotaItems(limits = [], usageResp = null) {
   ];
 }
 
+function zaiUsageUrl(start, end) {
+  return `${ZAI_CODING_API_BASE}/api/monitor/usage/model-usage?startTime=${encodeURIComponent(formatZaiDateTime(start))}&endTime=${encodeURIComponent(formatZaiDateTime(end))}`;
+}
+
+function zaiHistoryLabel(value = "") {
+  const text = String(value || "");
+  if (text.includes("T")) return text.slice(11, 13);
+  if (text.length >= 10) return text.slice(5, 10);
+  return text || "--";
+}
+
+function zaiUsageHistory(resp) {
+  const data = resp?.json?.data || {};
+  const times = Array.isArray(data.x_time) ? data.x_time : [];
+  const tokens = Array.isArray(data.tokensUsage) ? data.tokensUsage : [];
+  return times.map((time, index) => {
+    const hasHour = String(time || "").includes(" ");
+    const date = hasHour ? String(time).replace(" ", "T").slice(0, 13) : String(time || "").slice(0, 10);
+    return { date, used: Number(tokens[index] || 0) };
+  }).filter((item) => item.used > 0);
+}
+
+function compactUsageBars(history = [], limit = 12) {
+  if (!history.length) return [];
+  const size = Math.max(1, Math.ceil(history.length / limit));
+  const buckets = [];
+  for (let index = 0; index < history.length; index += size) {
+    const chunk = history.slice(index, index + size);
+    const used = chunk.reduce((sum, item) => sum + Number(item.used || 0), 0);
+    buckets.push({
+      label: zaiHistoryLabel(chunk[chunk.length - 1]?.date),
+      used,
+    });
+  }
+  const max = Math.max(1, ...buckets.map((item) => item.used));
+  return buckets.map((item) => ({
+    ...item,
+    valueLabel: formatCount(item.used),
+    pct: Math.max(6, Math.round((item.used / max) * 100)),
+  }));
+}
+
+function aggregateUsageByDay(history = []) {
+  const grouped = new Map();
+  for (const item of history) {
+    const day = String(item.date || "").slice(0, 10);
+    if (!day) continue;
+    grouped.set(day, (grouped.get(day) || 0) + Number(item.used || 0));
+  }
+  return [...grouped.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, used]) => ({ date, used }));
+}
+
+function zaiUsagePeriod(key, label, resp, limit, groupByDay = false) {
+  const rawHistory = zaiUsageHistory(resp);
+  const history = groupByDay ? aggregateUsageByDay(rawHistory) : rawHistory;
+  const total = Number(resp?.json?.data?.totalUsage?.totalTokensUsage || 0)
+    || history.reduce((sum, item) => sum + Number(item.used || 0), 0);
+  return {
+    key,
+    label,
+    status: resp?.ok ? "ok" : "waiting",
+    total,
+    totalLabel: total > 0 ? formatCount(total) : "--",
+    bars: compactUsageBars(history, limit),
+  };
+}
+
+function buildZaiUsageTrend(resp1d, resp7d, resp30d) {
+  const history1d = zaiUsagePeriod("1d", "日", resp1d, 12);
+  const history7d = zaiUsagePeriod("7d", "7天", resp7d, 7, true);
+  const history30d = zaiUsagePeriod("30d", "30天", resp30d, 15, true);
+  return {
+    key: "glm",
+    label: "GLM 消耗趋势",
+    source: "Coding Quota Bar",
+    history1d,
+    history7d,
+    history30d,
+    periods: [history1d, history7d, history30d],
+  };
+}
+
 function readCodingQuotaConfig() {
   try {
     return JSON.parse(fs.readFileSync(CODING_QUOTA_CONFIG_PATH, "utf8"));
@@ -646,18 +759,18 @@ async function fetchZaiQuotaForAccount(account) {
 
   const now = new Date();
   const oneDayAgo = new Date(now.getTime() - 86400000);
-  const usageResp = await requestTextWithRetry(
-    "GET",
-    `${ZAI_CODING_API_BASE}/api/monitor/usage/model-usage?startTime=${encodeURIComponent(formatZaiDateTime(oneDayAgo))}&endTime=${encodeURIComponent(formatZaiDateTime(now))}`,
-    "",
-    headers,
-    30000,
-    2
-  );
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+  const [usageResp, usage7dResp, usage30dResp] = await Promise.all([
+    requestTextWithRetry("GET", zaiUsageUrl(oneDayAgo, now), "", headers, 30000, 2),
+    requestTextWithRetry("GET", zaiUsageUrl(sevenDaysAgo, now), "", headers, 30000, 2),
+    requestTextWithRetry("GET", zaiUsageUrl(thirtyDaysAgo, now), "", headers, 30000, 2),
+  ]);
 
   const items = zaiQuotaItems(quotaResp.json.data.limits, usageResp);
   const primary = items.find((item) => item.key === "glm-5h") || items[0];
   const levelLabel = quotaResp.json.data.level ? String(quotaResp.json.data.level).toUpperCase() : "";
+  const usageTrend = buildZaiUsageTrend(usageResp, usage7dResp, usage30dResp);
 
   return {
     key: "glm",
@@ -670,6 +783,7 @@ async function fetchZaiQuotaForAccount(account) {
     levelLabel,
     pct: Math.max(4, ...items.map((item) => Number(item.pct || 0))),
     items,
+    usageTrend,
   };
 }
 
@@ -768,6 +882,57 @@ async function quotaFeeds(byTool = {}, total = 0) {
     await cachedZaiQuota(),
     codexQuotaFromTools(byTool, total),
   ];
+}
+
+function usageTrends(feeds = []) {
+  const glm = feeds.find((feed) => feed?.key === "glm");
+  return {
+    glm: glm?.usageTrend || {
+      key: "glm",
+      label: "GLM 消耗趋势",
+      source: "Coding Quota Bar",
+      history1d: zaiUsagePeriod("1d", "日", null, 12),
+      history7d: zaiUsagePeriod("7d", "7天", null, 7),
+      history30d: zaiUsagePeriod("30d", "30天", null, 15),
+      periods: [],
+    },
+  };
+}
+
+function buildQuotaAudit(byTool = {}, feeds = []) {
+  const glm = feeds.find((feed) => feed?.key === "glm");
+  const rows = [{
+    key: "glm",
+    label: "GLM / Z.ai",
+    status: glm?.status === "ok" ? "ok" : "missing",
+    detail: glm?.status === "ok"
+      ? "已接入 Z.ai 5小时额度、MCP 额度和历史消耗"
+      : "未读到可用 Z.ai 额度源",
+  }];
+
+  const usageOnly = [
+    ["codex", "Codex", "未找到可读 5小时/周额度源，仅显示 OpenToken 消耗"],
+    ["claude-code", "Claude Code", "未找到可读官方额度源，仅显示 OpenToken 消耗"],
+  ];
+
+  for (const [key, label, detail] of usageOnly) {
+    if (Number(byTool[key] || 0) > 0) {
+      rows.push({ key, label, status: "usage-only", detail });
+    }
+  }
+
+  for (const key of Object.keys(byTool)) {
+    if (!["glm", "codex", "claude-code"].includes(key) && Number(byTool[key] || 0) > 0) {
+      rows.push({
+        key,
+        label: toolLabel(key),
+        status: "usage-only",
+        detail: "已接入 OpenToken 消耗统计，未发现独立额度源",
+      });
+    }
+  }
+
+  return rows;
 }
 
 function rankedTools(byTool = {}, total = 0) {
@@ -1021,17 +1186,30 @@ function buildSyncStatus(uploadSummary, board) {
 
 async function buildSummary() {
   const uploadSummary = state.lastUpload?.summary || null;
+  const uploadRowsSummary = uploadSummary
+    ? summarizeRows(rowsFromPayload(state.lastUpload?.payload), uploadSummary.date)
+    : null;
   const board = state.leaderboard || null;
   const own = board?.own || null;
   const previous = board?.previous || null;
   const next = board?.next || null;
-  const byTool = normalizeToolMap(own?.byTool || uploadSummary?.byTool || {});
+  const uploadByTool = uploadRowsSummary?.rowCount
+    ? uploadRowsSummary.byTool
+    : uploadSummary?.byTool || {};
+  const normalizedByTool = normalizeToolMap(
+    uploadRowsSummary?.rowCount
+      ? uploadRowsSummary.normalizedByTool
+      : uploadSummary?.normalizedByTool || {},
+  );
+  const byTool = normalizeToolMap(own?.byTool || uploadByTool);
   const total = Number(own?.score || uploadSummary?.total || 0);
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
-  const tools = toolsFromMap(byTool);
+  const tools = toolsFromUsageMaps(byTool, normalizedByTool);
   const quotas = await quotaFeeds(byTool, total);
+  const trends = usageTrends(quotas);
+  const quotaAudit = buildQuotaAudit(byTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
   const game = buildGame({
     total,
@@ -1075,6 +1253,8 @@ async function buildSummary() {
     badges: game.badges,
     tools,
     quotaFeeds: quotas,
+    usageTrends: trends,
+    quotaAudit,
     upstream: {
       accepted: state.lastUpload?.upstream?.json?.accepted ?? null,
       status: state.lastUpload?.upstream?.status ?? null,
