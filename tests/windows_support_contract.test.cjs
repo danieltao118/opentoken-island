@@ -233,6 +233,9 @@ assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve nor
 assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
 assert.match(serverJs, /rawValueLabel/, "Tool usage rows should expose the raw leaderboard score separately");
 assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normalized effective usage separately");
+assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use leaderboard/raw usage as the primary visible value");
+assert.match(serverJs, /normalizedValue > 0[\s\S]*折算/, "Tool rows should show normalized usage only as secondary detail");
+assert.doesNotMatch(serverJs, /hasNormalizedUsage && normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not replace raw leaderboard usage with normalized usage");
 assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
 assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");

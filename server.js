@@ -417,12 +417,11 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
       ...Object.keys(normalizedByTool || {}),
     ]),
   ];
-  const hasNormalizedUsage = Object.values(normalizedByTool || {}).some((value) => Number(value || 0) > 0);
   const entries = names
     .map((name) => {
       const rawValue = Number(rawByTool[name] || 0);
       const normalizedValue = Number(normalizedByTool[name] || 0);
-      const value = hasNormalizedUsage && normalizedValue > 0 ? normalizedValue : rawValue;
+      const value = rawValue > 0 ? rawValue : normalizedValue;
       return { name, value, rawValue, normalizedValue };
     })
     .filter((tool) => tool.value > 0 || tool.rawValue > 0)
@@ -438,7 +437,7 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
     rawValueLabel: formatCount(rawValue),
     normalizedLabel: normalizedValue > 0 ? formatCount(normalizedValue) : "",
     detail: normalizedValue > 0 && rawValue > 0 && rawValue !== normalizedValue
-      ? `榜单原始 ${formatCount(rawValue)}`
+      ? `折算 ${formatCount(normalizedValue)}`
       : "",
     pct: Math.max(4, Math.round((value / max) * 100)),
   }));
