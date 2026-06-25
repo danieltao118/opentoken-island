@@ -213,6 +213,9 @@ assert.match(serverJs, /servername: target\.hostname/, "DNS fallback must keep t
 assert.match(serverJs, /DNS_FALLBACK_TTL_MS/, "Windows DNS fallback should be cached between quota refreshes");
 assert.match(serverJs, /quota\/limit[\s\S]*30000,\s*2/, "Z.ai quota reads need enough timeout for DNS fallback");
 assert.match(serverJs, /requestTextWithRetry\([\s\S]*quota\/limit/, "Z.ai quota reads should use retry logic");
+assert.match(serverJs, /QUOTA_ERROR_CACHE_TTL_MS\s*=\s*30 \* 1000/, "Transient Z.ai quota errors should only be cached briefly");
+assert.match(serverJs, /function quotaCacheTtl/, "Z.ai quota cache TTL should depend on success or error state");
+assert.match(serverJs, /quotaCacheTtl\(quotaCache\.zai\)/, "Cached Z.ai quota errors should not reuse the full success TTL");
 assert.match(serverJs, /\/api\/open-logs/, "Server should expose an API endpoint for the log icon button");
 assert.match(serverJs, /function openLogsFile/, "Server should open the local OpenToken Island event log");
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");

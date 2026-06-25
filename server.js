@@ -16,6 +16,7 @@ const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 const CODING_QUOTA_CONFIG_PATH = path.join(APPDATA, "coding-quota-bar", "config.json");
 const ZAI_CODING_API_BASE = "https://api.z.ai";
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
+const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
 const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
 const dnsFallbackCache = new Map();
 
@@ -802,8 +803,12 @@ async function fetchZaiQuota() {
   return lastError;
 }
 
+function quotaCacheTtl(feed) {
+  return feed?.status === "ok" ? QUOTA_CACHE_TTL_MS : QUOTA_ERROR_CACHE_TTL_MS;
+}
+
 async function cachedZaiQuota() {
-  if (quotaCache.zai && Date.now() - quotaCache.at < QUOTA_CACHE_TTL_MS) {
+  if (quotaCache.zai && Date.now() - quotaCache.at < quotaCacheTtl(quotaCache.zai)) {
     return quotaCache.zai;
   }
 
