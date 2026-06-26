@@ -14,6 +14,7 @@ const EVENT_LOG_PATH = path.join(HOME, ".opentoken", "island-events.log");
 const DEFAULT_UPSTREAM_ORIGIN = "https://scys.com";
 const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 const CODING_QUOTA_CONFIG_PATH = path.join(APPDATA, "coding-quota-bar", "config.json");
+const TOKENRANK_URL = "https://scys.com/tokenrank/";
 const ZAI_CODING_API_BASE = "https://api.z.ai";
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
@@ -171,6 +172,24 @@ function run(cmd, args, timeout = 30000) {
         stdout: stdout || "",
         stderr: stderr || "",
         message: error ? error.message : "",
+      });
+    });
+  });
+}
+
+function openExternalUrl(targetUrl) {
+  return new Promise((resolve) => {
+    const opener = process.platform === "win32"
+      ? { cmd: "cmd", args: ["/c", "start", "", targetUrl] }
+      : process.platform === "darwin"
+        ? { cmd: "open", args: [targetUrl] }
+        : { cmd: "xdg-open", args: [targetUrl] };
+
+    execFile(opener.cmd, opener.args, { windowsHide: true }, (error) => {
+      resolve({
+        ok: !error,
+        error: error ? error.message : "",
+        url: targetUrl,
       });
     });
   });
@@ -1312,6 +1331,11 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/open-logs") {
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
     return json(res, 200, await openLogsFile());
+  }
+
+  if (url.pathname === "/api/open-leaderboard") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
+    return json(res, 200, await openExternalUrl(TOKENRANK_URL));
   }
 
   if (url.pathname === "/api/service") {

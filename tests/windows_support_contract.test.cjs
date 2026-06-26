@@ -153,6 +153,9 @@ assert.match(popoverHtml, /id="pauseButton"/, "Pause button should have an expli
 assert.match(popoverHtml, /function toggleRefreshPause/, "Pause button should pause and resume panel auto-refresh");
 assert.match(popoverHtml, /id="logButton"/, "Log icon button should have an explicit behavior hook");
 assert.match(popoverHtml, /function openLogs/, "Log icon button should open the local event log");
+assert.match(popoverHtml, /id="leaderboardButton"/, "Panel should expose a button for the public SCYS token ranking");
+assert.match(popoverHtml, /function openLeaderboard/, "Leaderboard button should open the real ranking page through the local API");
+assert.match(popoverHtml, /\/open-leaderboard/, "Leaderboard button should call the local default-browser opener");
 assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leaderboard score as secondary detail");
 assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
@@ -216,6 +219,9 @@ assert.match(serverJs, /requestTextWithRetry\([\s\S]*quota\/limit/, "Z.ai quota 
 assert.match(serverJs, /QUOTA_ERROR_CACHE_TTL_MS\s*=\s*30 \* 1000/, "Transient Z.ai quota errors should only be cached briefly");
 assert.match(serverJs, /function quotaCacheTtl/, "Z.ai quota cache TTL should depend on success or error state");
 assert.match(serverJs, /quotaCacheTtl\(quotaCache\.zai\)/, "Cached Z.ai quota errors should not reuse the full success TTL");
+assert.match(serverJs, /TOKENRANK_URL = "https:\/\/scys\.com\/tokenrank\/"/, "Server should keep the public ranking URL in one audited constant");
+assert.match(serverJs, /\/api\/open-leaderboard/, "Server should expose an endpoint to open the public ranking page");
+assert.match(serverJs, /openExternalUrl\(TOKENRANK_URL\)/, "Leaderboard endpoint should use the system default browser opener");
 assert.match(serverJs, /\/api\/open-logs/, "Server should expose an API endpoint for the log icon button");
 assert.match(serverJs, /function openLogsFile/, "Server should open the local OpenToken Island event log");
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");

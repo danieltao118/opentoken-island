@@ -327,6 +327,7 @@
         <div class="actions">
           <button id="uploadButton" class="btn primary" type="button"><i data-lucide="upload-cloud"></i><span id="uploadLabel">立即上报</span></button>
           <button id="reloadButton" class="btn" type="button"><i data-lucide="refresh-cw"></i><span>刷新</span></button>
+          <button id="leaderboardButton" class="btn icon" type="button" aria-label="打开真实榜单" title="用默认浏览器打开生财有术 Token 消耗排行榜"><i data-lucide="external-link"></i></button>
           <button id="logButton" class="btn icon" type="button" aria-label="打开日志" title="打开本地事件日志"><i data-lucide="file-text"></i></button>
         </div>
       </header>
@@ -482,6 +483,11 @@
     };
 
     $('#reloadButton').onclick = load;
+    $('#leaderboardButton').onclick = async () => {
+      try {
+        await fetch(API + '/open-leaderboard', { method: 'POST' });
+      } catch {}
+    };
     $('#logButton').onclick = async () => {
       try {
         await fetch(API + '/open-logs', { method: 'POST' });
