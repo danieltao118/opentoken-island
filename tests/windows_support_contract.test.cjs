@@ -235,6 +235,9 @@ assert.match(serverJs, /排行榜仅返回前/, "Sync detail should explain when
 assert.match(serverJs, /function requestTextWithRetry/, "Upload forwarding should retry transient network failures");
 assert.match(serverJs, /ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT/, "Retry logic should cover common DNS and socket failures");
 assert.match(serverJs, /requestTextWithRetry\("POST", upstreamUrl/, "OpenToken upload forwarding must use retry logic");
+assert.match(serverJs, /function isAnyLocalWebhook/, "Proxy setup must detect localhost webhooks even when they were created by a different temporary port");
+assert.match(serverJs, /isAnyLocalWebhook\(current\)[\s\S]*state\.upstreamUrl = upstreamFromLocal\(current\)/, "Proxy setup must never persist a localhost webhook as the real upstream URL");
+assert.match(serverJs, /state\.upstreamUrl && isAnyLocalWebhook\(state\.upstreamUrl\)[\s\S]*state\.upstreamUrl = upstreamFromLocal\(state\.upstreamUrl\)/, "Proxy setup should repair previously poisoned localhost upstream URLs");
 assert.match(serverJs, /5小时额度/, "Server should label the five-hour quota bucket");
 assert.match(serverJs, /MCP额度/, "Server should label the Z.ai MCP quota bucket");
 assert.match(serverJs, /周额度/, "Server should label the weekly quota bucket");

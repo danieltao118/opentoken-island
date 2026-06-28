@@ -114,6 +114,15 @@ function isLocalWebhook(webhook) {
   }
 }
 
+function isAnyLocalWebhook(webhook) {
+  try {
+    const url = new URL(webhook);
+    return ["127.0.0.1", "localhost"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function localWebhookFor(upstreamUrl) {
   const upstream = new URL(upstreamUrl);
   return `http://127.0.0.1:${PORT}${upstream.pathname}${upstream.search}`;
@@ -134,11 +143,21 @@ function ensureProxyConfig() {
     stateChanged = true;
   }
 
+  if (state.upstreamUrl && isAnyLocalWebhook(state.upstreamUrl)) {
+    state.upstreamUrl = upstreamFromLocal(state.upstreamUrl);
+    stateChanged = true;
+  }
+
   if (current) {
-    if (isLocalWebhook(current)) {
+    if (isAnyLocalWebhook(current)) {
       if (!state.upstreamUrl) {
         state.upstreamUrl = upstreamFromLocal(current);
         stateChanged = true;
+      }
+      const localWebhook = localWebhookFor(state.upstreamUrl);
+      if (config.webhook_url !== localWebhook) {
+        config.webhook_url = localWebhook;
+        writeConfig(config);
       }
     } else {
       state.upstreamUrl = current;
