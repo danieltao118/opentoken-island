@@ -160,6 +160,11 @@ assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leade
 assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
 assert.match(popoverHtml, /trend-bars/, "GLM daily, seven-day, and thirty-day stats should render as bar charts");
+assert.match(popoverHtml, /activeTrendPeriod\s*=\s*'24h'/, "Popover should default GLM trends to the recent 24 hours");
+assert.match(popoverHtml, /class="trend-tabs"/, "Popover should switch 24h, 7d, and 30d trends in one compact chart");
+assert.match(popoverHtml, /function setTrendPeriod/, "Trend tabs should update the focused usage period without crowding the panel");
+assert.match(popoverHtml, /class="trend-detail"/, "Hourly trend bars should expose readable in-panel details");
+assert.match(popoverHtml, /data-trend-index/, "Trend bars should support selecting an hour to inspect exact usage");
 assert.doesNotMatch(popoverHtml, /class="badges"|function renderBadges|function renderQuests|Hot Streak|Daily Quest/, "Low-value gamification badges and quests should not crowd out quota data");
 assert.doesNotMatch(popoverHtml, /Builder Lv|XP|class="game"|rankDelta|xpText|rankGap|level-line|battle/, "Panel must not show synthetic level, XP, or game battle data");
 assert.match(popoverHtml, /id="rankFacts"/, "Panel should replace game data with real leaderboard facts");
@@ -245,6 +250,9 @@ assert.doesNotMatch(serverJs, /hasNormalizedUsage && normalizedValue > 0 \? norm
 assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
 assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");
+assert.match(serverJs, /history24h/, "Server should expose a recent-24-hour GLM trend for the default panel view");
+assert.match(serverJs, /zaiUsagePeriod\("24h",\s*"24h"[\s\S]*24/, "Recent-24-hour GLM trend should keep hourly buckets instead of compacting to three coarse blocks");
+assert.match(serverJs, /periods:\s*\[history24h,\s*history7d,\s*history30d\]/, "Server should order trend periods for compact 24h-first switching");
 assert.match(serverJs, /model-usage\?startTime/, "GLM trends should use the same model-usage endpoint as Coding Quota Bar");
 assert.match(serverJs, /usageTrends/, "Summary payload should include chart-ready usage trends");
 assert.match(serverJs, /function buildQuotaAudit/, "Summary payload should explain which agents have reliable quota sources");

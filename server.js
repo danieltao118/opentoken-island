@@ -503,6 +503,11 @@ function formatZaiDateTime(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+function localHourKey(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}`;
+}
+
 function formatResetTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -645,15 +650,30 @@ function zaiHistoryLabel(value = "") {
   return text || "--";
 }
 
-function zaiUsageHistory(resp) {
+function zaiUsageHistory(resp, includeEmpty = false) {
   const data = resp?.json?.data || {};
   const times = Array.isArray(data.x_time) ? data.x_time : [];
   const tokens = Array.isArray(data.tokensUsage) ? data.tokensUsage : [];
-  return times.map((time, index) => {
+  const history = times.map((time, index) => {
     const hasHour = String(time || "").includes(" ");
     const date = hasHour ? String(time).replace(" ", "T").slice(0, 13) : String(time || "").slice(0, 10);
     return { date, used: Number(tokens[index] || 0) };
-  }).filter((item) => item.used > 0);
+  });
+  return includeEmpty ? history : history.filter((item) => item.used > 0);
+}
+
+function recentHourlyUsageHistory(resp, hours = 24) {
+  const rawHistory = zaiUsageHistory(resp, true).filter((item) => String(item.date || "").length === 13);
+  const byHour = new Map(rawHistory.map((item) => [item.date, Number(item.used || 0)]));
+  const end = new Date();
+  end.setMinutes(0, 0, 0);
+  const history = [];
+  for (let offset = hours - 1; offset >= 0; offset -= 1) {
+    const hour = new Date(end.getTime() - offset * 60 * 60 * 1000);
+    const date = localHourKey(hour);
+    history.push({ date, used: byHour.get(date) || 0 });
+  }
+  return history;
 }
 
 function compactUsageBars(history = [], limit = 12) {
@@ -672,8 +692,18 @@ function compactUsageBars(history = [], limit = 12) {
   return buckets.map((item) => ({
     ...item,
     valueLabel: formatCount(item.used),
-    pct: Math.max(6, Math.round((item.used / max) * 100)),
+    pct: item.used > 0 ? Math.max(6, Math.round((item.used / max) * 100)) : 0,
   }));
+}
+
+function usageBarSummary(bars = []) {
+  const activeBars = bars.filter((bar) => Number(bar.used || 0) > 0);
+  const peak = activeBars.reduce((best, bar) => (Number(bar.used || 0) > Number(best?.used || 0) ? bar : best), null);
+  const latest = activeBars[activeBars.length - 1] || null;
+  return {
+    peakLabel: peak ? `${peak.label} · ${peak.valueLabel}` : "--",
+    latestLabel: latest ? `${latest.label} · ${latest.valueLabel}` : "--",
+  };
 }
 
 function aggregateUsageByDay(history = []) {
@@ -688,22 +718,26 @@ function aggregateUsageByDay(history = []) {
     .map(([date, used]) => ({ date, used }));
 }
 
-function zaiUsagePeriod(key, label, resp, limit, groupByDay = false) {
-  const rawHistory = zaiUsageHistory(resp);
+function zaiUsagePeriod(key, label, resp, limit, groupByDay = false, historyOverride = null) {
+  const rawHistory = Array.isArray(historyOverride) ? historyOverride : zaiUsageHistory(resp);
   const history = groupByDay ? aggregateUsageByDay(rawHistory) : rawHistory;
   const total = Number(resp?.json?.data?.totalUsage?.totalTokensUsage || 0)
     || history.reduce((sum, item) => sum + Number(item.used || 0), 0);
+  const bars = compactUsageBars(history, limit);
+  const summary = usageBarSummary(bars);
   return {
     key,
     label,
     status: resp?.ok ? "ok" : "waiting",
     total,
     totalLabel: total > 0 ? formatCount(total) : "--",
-    bars: compactUsageBars(history, limit),
+    bars,
+    ...summary,
   };
 }
 
 function buildZaiUsageTrend(resp1d, resp7d, resp30d) {
+  const history24h = zaiUsagePeriod("24h", "24h", resp1d, 24, false, recentHourlyUsageHistory(resp1d, 24));
   const history1d = zaiUsagePeriod("1d", "日", resp1d, 12);
   const history7d = zaiUsagePeriod("7d", "7天", resp7d, 7, true);
   const history30d = zaiUsagePeriod("30d", "30天", resp30d, 15, true);
@@ -711,10 +745,11 @@ function buildZaiUsageTrend(resp1d, resp7d, resp30d) {
     key: "glm",
     label: "GLM 消耗趋势",
     source: "Coding Quota Bar",
+    history24h,
     history1d,
     history7d,
     history30d,
-    periods: [history1d, history7d, history30d],
+    periods: [history24h, history7d, history30d],
   };
 }
 
