@@ -268,9 +268,9 @@ assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normali
 assert.doesNotMatch(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not use normalized input+output as the primary visible usage");
 assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use raw actual usage as the primary visible value");
 assert.match(serverJs, /function actualUsageSummary/, "Summary should build one audited actual-usage total across live sources");
-assert.match(serverJs, /function glmActualUsageFromTrends/, "GLM actual usage should come from the Coding Quota Bar 24h provider trend");
+assert.doesNotMatch(serverJs, /usageToolEntry\(\s*"glm"[\s\S]*Coding Quota Bar 24h/, "Coding Quota Bar GLM provider trends must not be included in the actual usage total");
 assert.match(serverJs, /const codexValue = Number\(rawByTool\.codex \|\| 0\)/, "Codex actual usage should use raw OpenToken tokens including cache reads");
-assert.match(serverJs, /GLM provider usage already covers Claude Code/, "Claude Code GLM rows should not be double-counted when provider totals are available");
+assert.match(serverJs, /const claudeValue = Number\(rawByTool\["claude-code"\] \|\| 0\)[\s\S]*if \(claudeValue > 0\)/, "Claude Code OpenToken rows should remain in the actual usage total");
 assert.doesNotMatch(serverJs, /const actualByTool = normalizedByTool/, "Actual totals must not collapse to normalized OpenToken rows only");
 assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");

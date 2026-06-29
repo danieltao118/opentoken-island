@@ -520,24 +520,11 @@ function finalizeUsageTools(entries = []) {
   }));
 }
 
-function glmActualUsageFromTrends(trends = {}) {
-  return Number(
-    trends?.glm?.history24h?.total
-      || trends?.glm?.history1d?.total
-      || 0,
-  );
-}
-
-function actualUsageSummary(rawByToolInput = {}, normalizedByToolInput = {}, trends = {}) {
+function actualUsageSummary(rawByToolInput = {}, normalizedByToolInput = {}) {
   const rawByTool = normalizeToolMap(rawByToolInput);
   const normalizedByTool = normalizeToolMap(normalizedByToolInput);
   const entries = [];
-  const glmValue = glmActualUsageFromTrends(trends);
   const codexValue = Number(rawByTool.codex || 0);
-
-  if (glmValue > 0) {
-    entries.push(usageToolEntry("glm", glmValue, glmValue, 0, "Coding Quota Bar 24h"));
-  }
 
   if (codexValue > 0) {
     const normalizedValue = Number(normalizedByTool.codex || 0);
@@ -550,10 +537,8 @@ function actualUsageSummary(rawByToolInput = {}, normalizedByToolInput = {}, tre
     ));
   }
 
-  // GLM provider usage already covers Claude Code model rows, so skip it in
-  // the top total when the Coding Quota Bar provider total is available.
   const claudeValue = Number(rawByTool["claude-code"] || 0);
-  if (claudeValue > 0 && glmValue <= 0) {
+  if (claudeValue > 0) {
     const normalizedValue = Number(normalizedByTool["claude-code"] || 0);
     entries.push(usageToolEntry(
       "claude-code",
@@ -1370,7 +1355,7 @@ async function buildSummary() {
   const lead = Number(board?.leadOverNext || 0);
   const quotas = await quotaFeeds(byTool, uploadRawTotal || leaderboardTotal);
   const trends = usageTrends(quotas);
-  const actualUsage = actualUsageSummary(byTool, normalizedByTool, trends);
+  const actualUsage = actualUsageSummary(byTool, normalizedByTool);
   const actualTotal = Number(actualUsage.total || uploadRawTotal || leaderboardTotal || 0);
   const total = actualTotal || leaderboardTotal;
   const tools = actualUsage.tools.length
