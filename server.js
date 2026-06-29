@@ -1349,19 +1349,27 @@ async function buildSummary() {
   const byTool = normalizeToolMap(usageByTool);
   const leaderboardByTool = normalizeToolMap(own?.byTool || {});
   const leaderboardTotal = Number(own?.score || uploadSummary?.total || 0);
+  const hasLeaderboardScore = Boolean(own && leaderboardTotal > 0);
+  const displayByTool = hasLeaderboardScore && Object.keys(leaderboardByTool).length
+    ? leaderboardByTool
+    : byTool;
   const uploadRawTotal = Number(usageSummary?.total || uploadSummary?.total || 0);
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
-  const quotas = await quotaFeeds(byTool, uploadRawTotal || leaderboardTotal);
+  const quotas = await quotaFeeds(displayByTool, hasLeaderboardScore ? leaderboardTotal : uploadRawTotal || leaderboardTotal);
   const trends = usageTrends(quotas);
-  const actualUsage = actualUsageSummary(byTool, normalizedByTool);
-  const actualTotal = Number(actualUsage.total || uploadRawTotal || leaderboardTotal || 0);
+  const actualUsage = actualUsageSummary(displayByTool, normalizedByTool);
+  const actualTotal = Number(
+    hasLeaderboardScore
+      ? leaderboardTotal
+      : actualUsage.total || uploadRawTotal || leaderboardTotal || 0,
+  );
   const total = actualTotal || leaderboardTotal;
   const tools = actualUsage.tools.length
     ? actualUsage.tools
-    : toolsFromUsageMaps(byTool, normalizedByTool);
-  const quotaAudit = buildQuotaAudit(byTool, quotas);
+    : toolsFromUsageMaps(displayByTool, normalizedByTool);
+  const quotaAudit = buildQuotaAudit(displayByTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
   const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal });
   const rankProgressPct = previous?.score

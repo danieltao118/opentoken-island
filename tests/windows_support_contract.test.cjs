@@ -256,7 +256,9 @@ assert.match(serverJs, /周额度/, "Server should label the weekly quota bucket
 assert.match(serverJs, /Ready|准备|就绪|OpenToken/, "Service detection should treat a ready Windows scheduled task as healthy");
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
 assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve normalized usage per tool");
-assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the actual provider usage total for the main UI");
+assert.match(serverJs, /const displayByTool = hasLeaderboardScore[\s\S]*\? leaderboardByTool[\s\S]*: byTool/, "When leaderboard is matched, visible total and tool rows should use the same SCYS leaderboard source");
+assert.match(serverJs, /const actualTotal = Number\(\s*hasLeaderboardScore\s*\? leaderboardTotal/, "The main visible total should equal the leaderboard score once the account is matched");
+assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the leaderboard-aligned usage total for the main UI");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
 assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
 assert.match(serverJs, /label: "榜单排名"/, "Rank facts should label ranking as a raw leaderboard fact");
