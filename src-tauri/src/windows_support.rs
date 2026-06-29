@@ -6,8 +6,21 @@ pub const DEFAULT_PORT: u16 = 4174;
 pub const STARTUP_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 pub const STARTUP_RUN_VALUE_NAME: &str = "OpenTokenIsland";
 
+pub fn opentoken_bin_candidates(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".local").join("bin").join("opentoken.exe"),
+        home.join(".opentoken").join("bin").join("opentoken.exe"),
+    ]
+}
+
 pub fn opentoken_bin(home: &Path) -> PathBuf {
-    home.join(".opentoken").join("bin").join("opentoken.exe")
+    let candidates = opentoken_bin_candidates(home);
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.clone();
+        }
+    }
+    candidates[0].clone()
 }
 
 pub fn server_resource_path(resource_dir: &Path) -> PathBuf {
@@ -153,7 +166,7 @@ mod tests {
         let path = opentoken_bin(Path::new(r"C:\Users\ty"));
         assert_eq!(
             path,
-            PathBuf::from(r"C:\Users\ty\.opentoken\bin\opentoken.exe")
+            PathBuf::from(r"C:\Users\ty\.local\bin\opentoken.exe")
         );
     }
 

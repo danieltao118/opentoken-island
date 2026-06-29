@@ -29,7 +29,7 @@ The Windows Tauri shell owns native integration:
 
 - Creates the system tray icon and menu.
 - Starts `server.js` if port `4174` is not already listening.
-- Passes `OPENTOKEN_ISLAND_PORT=4174` and `OPENTOKEN_BIN=%USERPROFILE%\.opentoken\bin\opentoken.exe` to the Node process.
+- Passes `OPENTOKEN_ISLAND_PORT=4174` and the detected OpenToken binary to the Node process, preferring `%USERPROFILE%\.local\bin\opentoken.exe` and falling back to `%USERPROFILE%\.opentoken\bin\opentoken.exe`.
 - Opens local WebView windows pointing at `http://127.0.0.1:4174/popover.html` and `http://127.0.0.1:4174/island.html`.
 - Terminates only the child server process it started. If an external Island server is already running, it leaves it alone.
 

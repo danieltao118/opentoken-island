@@ -18,6 +18,7 @@ const TOKENRANK_URL = "https://scys.com/tokenrank/";
 const ZAI_CODING_API_BASE = "https://api.z.ai";
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
+const PREVIEW_CACHE_TTL_MS = 45 * 1000;
 const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
 const dnsFallbackCache = new Map();
 
@@ -31,7 +32,8 @@ const mime = {
 
 let state = loadState();
 let quotaCache = { at: 0, zai: null };
-const OPENTOKEN = process.env.OPENTOKEN_BIN || state.opentokenBin || findOpenTokenBinary() || "opentoken";
+let previewCache = { at: 0, date: "", snapshot: null };
+const OPENTOKEN = process.env.OPENTOKEN_BIN || findOpenTokenBinary() || state.opentokenBin || "opentoken";
 
 function loadState() {
   try {
@@ -42,11 +44,16 @@ function loadState() {
 }
 
 function findOpenTokenBinary() {
-  const candidates = [
-    path.join(HOME, ".local", "bin", "opentoken"),
-    "/opt/homebrew/bin/opentoken",
-    "/usr/local/bin/opentoken",
-  ];
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(HOME, ".local", "bin", "opentoken.exe"),
+        path.join(HOME, ".opentoken", "bin", "opentoken.exe"),
+      ]
+    : [
+        path.join(HOME, ".local", "bin", "opentoken"),
+        "/opt/homebrew/bin/opentoken",
+        "/usr/local/bin/opentoken",
+      ];
   for (const candidate of candidates) {
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
@@ -138,7 +145,7 @@ function ensureProxyConfig() {
   const current = String(config.webhook_url || "");
   let stateChanged = false;
 
-  if (!state.opentokenBin && OPENTOKEN !== "opentoken") {
+  if (OPENTOKEN !== "opentoken" && state.opentokenBin !== OPENTOKEN) {
     state.opentokenBin = OPENTOKEN;
     stateChanged = true;
   }
@@ -459,7 +466,7 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
     .map((name) => {
       const rawValue = Number(rawByTool[name] || 0);
       const normalizedValue = Number(normalizedByTool[name] || 0);
-      const value = normalizedValue > 0 ? normalizedValue : rawValue;
+      const value = rawValue > 0 ? rawValue : normalizedValue;
       return { name, value, rawValue, normalizedValue };
     })
     .filter((tool) => tool.value > 0 || tool.rawValue > 0)
@@ -474,8 +481,8 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
     valueLabel: formatCount(value),
     rawValueLabel: formatCount(rawValue),
     normalizedLabel: normalizedValue > 0 ? formatCount(normalizedValue) : "",
-    detail: rawValue > 0 && rawValue !== value
-      ? `榜单分 ${formatCount(rawValue)}`
+    detail: normalizedValue > 0 && normalizedValue !== value
+      ? `新增 ${formatCount(normalizedValue)}`
       : "",
     pct: Math.max(4, Math.round((value / max) * 100)),
   }));
@@ -483,6 +490,99 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
 
 function toolsFromMap(byTool = {}) {
   return toolsFromUsageMaps(byTool, {});
+}
+
+function usageToolEntry(name, value, rawValue = value, normalizedValue = 0, detail = "") {
+  const numericValue = Number(value || 0);
+  const numericRaw = Number(rawValue || 0);
+  const numericNormalized = Number(normalizedValue || 0);
+  return {
+    name,
+    value: numericValue,
+    rawValue: numericRaw,
+    normalizedValue: numericNormalized,
+    label: toolLabel(name),
+    valueLabel: formatCount(numericValue),
+    rawValueLabel: formatCount(numericRaw),
+    normalizedLabel: numericNormalized > 0 ? formatCount(numericNormalized) : "",
+    detail,
+  };
+}
+
+function finalizeUsageTools(entries = []) {
+  const filtered = entries
+    .filter((tool) => Number(tool.value || 0) > 0)
+    .sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
+  const max = Math.max(1, ...filtered.map((tool) => Number(tool.value || 0)));
+  return filtered.slice(0, 6).map((tool) => ({
+    ...tool,
+    pct: Math.max(4, Math.round((Number(tool.value || 0) / max) * 100)),
+  }));
+}
+
+function glmActualUsageFromTrends(trends = {}) {
+  return Number(
+    trends?.glm?.history24h?.total
+      || trends?.glm?.history1d?.total
+      || 0,
+  );
+}
+
+function actualUsageSummary(rawByToolInput = {}, normalizedByToolInput = {}, trends = {}) {
+  const rawByTool = normalizeToolMap(rawByToolInput);
+  const normalizedByTool = normalizeToolMap(normalizedByToolInput);
+  const entries = [];
+  const glmValue = glmActualUsageFromTrends(trends);
+  const codexValue = Number(rawByTool.codex || 0);
+
+  if (glmValue > 0) {
+    entries.push(usageToolEntry("glm", glmValue, glmValue, 0, "Coding Quota Bar 24h"));
+  }
+
+  if (codexValue > 0) {
+    const normalizedValue = Number(normalizedByTool.codex || 0);
+    entries.push(usageToolEntry(
+      "codex",
+      codexValue,
+      codexValue,
+      normalizedValue,
+      normalizedValue > 0 ? `新增 ${formatCount(normalizedValue)}` : "OpenToken raw",
+    ));
+  }
+
+  // GLM provider usage already covers Claude Code model rows, so skip it in
+  // the top total when the Coding Quota Bar provider total is available.
+  const claudeValue = Number(rawByTool["claude-code"] || 0);
+  if (claudeValue > 0 && glmValue <= 0) {
+    const normalizedValue = Number(normalizedByTool["claude-code"] || 0);
+    entries.push(usageToolEntry(
+      "claude-code",
+      claudeValue,
+      claudeValue,
+      normalizedValue,
+      normalizedValue > 0 ? `新增 ${formatCount(normalizedValue)}` : "OpenToken raw",
+    ));
+  }
+
+  for (const [name, value] of Object.entries(rawByTool)) {
+    if (["codex", "claude-code"].includes(name)) continue;
+    const rawValue = Number(value || 0);
+    if (rawValue <= 0) continue;
+    const normalizedValue = Number(normalizedByTool[name] || 0);
+    entries.push(usageToolEntry(
+      name,
+      rawValue,
+      rawValue,
+      normalizedValue,
+      normalizedValue > 0 ? `新增 ${formatCount(normalizedValue)}` : "OpenToken raw",
+    ));
+  }
+
+  const tools = finalizeUsageTools(entries);
+  return {
+    total: tools.reduce((sum, tool) => sum + Number(tool.value || 0), 0),
+    tools,
+  };
 }
 
 function toolLabel(name) {
@@ -520,6 +620,11 @@ function clampPercent(value) {
 function formatZaiDateTime(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function localDateString(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function localHourKey(date) {
@@ -1200,41 +1305,78 @@ function buildSyncStatus(uploadSummary, board) {
   };
 }
 
+async function openTokenPreviewSnapshot(preferredDate = "") {
+  const date = preferredDate || localDateString();
+  if (
+    previewCache.snapshot
+    && previewCache.date === date
+    && Date.now() - previewCache.at < PREVIEW_CACHE_TTL_MS
+  ) {
+    return previewCache.snapshot;
+  }
+
+  const result = await run(OPENTOKEN, ["preview", "--since", date, "--json"], 120000);
+  if (!result.ok) {
+    const snapshot = {
+      ok: false,
+      date,
+      error: (result.stderr || result.stdout || result.message || "OpenToken preview failed").trim(),
+      summary: null,
+      payload: null,
+    };
+    previewCache = { at: Date.now(), date, snapshot };
+    return snapshot;
+  }
+
+  const payload = safeJson(result.stdout);
+  const rows = rowsFromPayload(payload);
+  const summary = summarizeRows(rows, date);
+  const snapshot = {
+    ok: summary.rowCount > 0,
+    date,
+    error: summary.rowCount > 0 ? "" : "OpenToken preview returned no rows",
+    summary,
+    payload,
+  };
+  previewCache = { at: Date.now(), date, snapshot };
+  return snapshot;
+}
+
 async function buildSummary() {
   const uploadSummary = state.lastUpload?.summary || null;
   const uploadRowsSummary = uploadSummary
     ? summarizeRows(rowsFromPayload(state.lastUpload?.payload), uploadSummary.date)
     : null;
+  const previewSnapshot = await openTokenPreviewSnapshot(uploadSummary?.date || localDateString());
+  const usageSummary = previewSnapshot?.summary?.rowCount
+    ? previewSnapshot.summary
+    : uploadRowsSummary?.rowCount
+      ? uploadRowsSummary
+      : uploadSummary;
   const board = state.leaderboard || null;
   const own = board?.own || null;
   const previous = board?.previous || null;
   const next = board?.next || null;
-  const uploadByTool = uploadRowsSummary?.rowCount
-    ? uploadRowsSummary.byTool
-    : uploadSummary?.byTool || {};
+  const usageByTool = usageSummary?.byTool || {};
   const normalizedByTool = normalizeToolMap(
-    uploadRowsSummary?.rowCount
-      ? uploadRowsSummary.normalizedByTool
-      : uploadSummary?.normalizedByTool || {},
+    usageSummary?.normalizedByTool || {},
   );
-  const byTool = normalizeToolMap(uploadByTool);
+  const byTool = normalizeToolMap(usageByTool);
   const leaderboardByTool = normalizeToolMap(own?.byTool || {});
-  const actualByTool = normalizedByTool;
   const leaderboardTotal = Number(own?.score || uploadSummary?.total || 0);
-  const actualTotal = Number(
-    uploadRowsSummary?.normalized
-      || uploadSummary?.normalized
-      || Object.values(actualByTool).reduce((sum, value) => sum + Number(value || 0), 0)
-      || 0,
-  );
-  const total = actualTotal || leaderboardTotal;
+  const uploadRawTotal = Number(usageSummary?.total || uploadSummary?.total || 0);
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
-  const tools = toolsFromUsageMaps(byTool, normalizedByTool);
-  const quotas = await quotaFeeds(actualByTool, total);
+  const quotas = await quotaFeeds(byTool, uploadRawTotal || leaderboardTotal);
   const trends = usageTrends(quotas);
-  const quotaAudit = buildQuotaAudit(actualByTool, quotas);
+  const actualUsage = actualUsageSummary(byTool, normalizedByTool, trends);
+  const actualTotal = Number(actualUsage.total || uploadRawTotal || leaderboardTotal || 0);
+  const total = actualTotal || leaderboardTotal;
+  const tools = actualUsage.tools.length
+    ? actualUsage.tools
+    : toolsFromUsageMaps(byTool, normalizedByTool);
+  const quotaAudit = buildQuotaAudit(byTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
   const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal });
   const rankProgressPct = previous?.score
@@ -1245,18 +1387,18 @@ async function buildSummary() {
 
   return {
     ok: true,
-    waiting: !uploadSummary,
-    source: own ? "leaderboard" : uploadSummary ? "upload" : "waiting",
+    waiting: !uploadSummary && !usageSummary?.rowCount,
+    source: own ? "leaderboard" : usageSummary?.rowCount ? "local-preview" : uploadSummary ? "upload" : "waiting",
     sync,
     syncLabel: sync.label,
     leaderboardMatched: sync.leaderboardMatched,
     capturedAt: state.lastUpload?.capturedAt || "",
     leaderboardUpdatedAt: board?.updatedAt || "",
-    date: uploadSummary?.date || "",
+    date: usageSummary?.date || uploadSummary?.date || "",
     total,
-    totalLabel: uploadSummary ? formatCount(total) : "--",
+    totalLabel: usageSummary || uploadSummary ? formatCount(total) : "--",
     actualTotal,
-    actualTotalLabel: uploadSummary ? formatCount(actualTotal || total) : "--",
+    actualTotalLabel: usageSummary || uploadSummary ? formatCount(actualTotal || total) : "--",
     leaderboardTotal,
     leaderboardTotalLabel: uploadSummary ? formatCount(leaderboardTotal) : "--",
     leaderboardByTool,
@@ -1277,6 +1419,13 @@ async function buildSummary() {
     quotaFeeds: quotas,
     usageTrends: trends,
     quotaAudit,
+    localPreview: {
+      ok: Boolean(previewSnapshot?.ok),
+      date: previewSnapshot?.date || "",
+      error: previewSnapshot?.error || "",
+      rowCount: Number(previewSnapshot?.summary?.rowCount || 0),
+      capturedAt: previewCache.at ? new Date(previewCache.at).toISOString() : "",
+    },
     upstream: {
       accepted: state.lastUpload?.upstream?.json?.accepted ?? null,
       status: state.lastUpload?.upstream?.status ?? null,
@@ -1318,6 +1467,7 @@ async function handleUploadProxy(req, res, url) {
     payload,
     summary,
   };
+  previewCache = { at: 0, date: "", snapshot: null };
   saveState();
   logIslandEvent("captured upload payload", {
     path: redactedPath,
@@ -1379,6 +1529,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/summary") {
     if (url.searchParams.get("refresh") === "1" && state.lastUpload?.summary) {
+      previewCache = { at: 0, date: "", snapshot: null };
       await refreshLeaderboard(state.lastUpload.summary, state.leaderboard?.own?.rank || null);
     }
     return json(res, 200, {
@@ -1392,6 +1543,7 @@ async function handleApi(req, res, url) {
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
     ensureProxyConfig();
     const result = await run(OPENTOKEN, ["upload"], 120000);
+    previewCache = { at: 0, date: "", snapshot: null };
     return json(res, result.ok ? 200 : 500, {
       ok: result.ok,
       output: (result.stdout || result.stderr || result.message).trim(),

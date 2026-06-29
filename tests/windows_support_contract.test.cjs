@@ -204,6 +204,11 @@ assert.match(
   /startup_registry_args\(exe: &Path\) -> Vec<String>/,
   "Startup registry arguments should be generated in a testable helper"
 );
+assert.match(
+  windowsSupport,
+  /home\.join\("\.local"\)\.join\("bin"\)\.join\("opentoken\.exe"\)/,
+  "Windows shell should prefer the same .local OpenToken binary used by the scheduled uploader"
+);
 
 const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
 assert.match(serverJs, /CODING_QUOTA_CONFIG_PATH/, "Server must know where Coding Quota Bar stores provider config");
@@ -234,6 +239,10 @@ assert.match(serverJs, /\/api\/open-logs/, "Server should expose an API endpoint
 assert.match(serverJs, /function openLogsFile/, "Server should open the local OpenToken Island event log");
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");
 assert.match(serverJs, /leaderboardMatched/, "Sync state must distinguish uploaded data from leaderboard matches");
+assert.match(serverJs, /function openTokenPreviewSnapshot/, "Summary payload should prefer a full local OpenToken preview snapshot over incremental upload payloads");
+assert.match(serverJs, /\["preview", "--since", date, "--json"\]/, "OpenToken preview snapshots should use the JSON rows that represent the full local daily state");
+assert.doesNotMatch(serverJs, /const uploadByTool = uploadRowsSummary\?\.rowCount[\s\S]{0,80}\? uploadRowsSummary\.byTool/, "Summary must not treat incremental upload payloads as the full local usage source");
+assert.match(serverJs, /url\.searchParams\.get\("refresh"\) === "1"[\s\S]{0,120}previewCache = \{ at: 0, date: "", snapshot: null \}/, "Manual summary refresh should force a fresh local OpenToken preview");
 assert.match(serverJs, /排行榜仅返回前/, "Sync detail should explain when the current account is not in the returned leaderboard page");
 assert.match(serverJs, /function requestTextWithRetry/, "Upload forwarding should retry transient network failures");
 assert.match(serverJs, /ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT/, "Retry logic should cover common DNS and socket failures");
@@ -247,7 +256,7 @@ assert.match(serverJs, /周额度/, "Server should label the weekly quota bucket
 assert.match(serverJs, /Ready|准备|就绪|OpenToken/, "Service detection should treat a ready Windows scheduled task as healthy");
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
 assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve normalized usage per tool");
-assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the actual fresh input and output total for the main UI");
+assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the actual provider usage total for the main UI");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
 assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
 assert.match(serverJs, /label: "榜单排名"/, "Rank facts should label ranking as a raw leaderboard fact");
@@ -256,9 +265,13 @@ assert.doesNotMatch(serverJs, /label: "上报接收"[\s\S]*`\$\{accepted\} 条`/
 assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
 assert.match(serverJs, /rawValueLabel/, "Tool usage rows should expose the raw leaderboard score separately");
 assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normalized effective usage separately");
-assert.match(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows should use actual normalized usage as the primary visible value");
-assert.match(serverJs, /rawValue > 0[\s\S]*榜单分/, "Tool rows should show raw leaderboard score only as secondary detail");
-assert.doesNotMatch(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows must not use cache-heavy raw leaderboard usage as the primary visible value");
+assert.doesNotMatch(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not use normalized input+output as the primary visible usage");
+assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use raw actual usage as the primary visible value");
+assert.match(serverJs, /function actualUsageSummary/, "Summary should build one audited actual-usage total across live sources");
+assert.match(serverJs, /function glmActualUsageFromTrends/, "GLM actual usage should come from the Coding Quota Bar 24h provider trend");
+assert.match(serverJs, /const codexValue = Number\(rawByTool\.codex \|\| 0\)/, "Codex actual usage should use raw OpenToken tokens including cache reads");
+assert.match(serverJs, /GLM provider usage already covers Claude Code/, "Claude Code GLM rows should not be double-counted when provider totals are available");
+assert.doesNotMatch(serverJs, /const actualByTool = normalizedByTool/, "Actual totals must not collapse to normalized OpenToken rows only");
 assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
 assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");

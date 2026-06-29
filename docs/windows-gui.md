@@ -41,8 +41,10 @@ If port `4174` is already open, the Tauri app reuses the existing local server. 
 
 ```text
 OPENTOKEN_ISLAND_PORT=4174
-OPENTOKEN_BIN=%USERPROFILE%\.opentoken\bin\opentoken.exe
+OPENTOKEN_BIN=%USERPROFILE%\.local\bin\opentoken.exe
 ```
+
+On Windows, the shell prefers `%USERPROFILE%\.local\bin\opentoken.exe` and falls back to `%USERPROFILE%\.opentoken\bin\opentoken.exe` for older installs.
 
 ## Build Installer
 
