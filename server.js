@@ -459,7 +459,7 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
     .map((name) => {
       const rawValue = Number(rawByTool[name] || 0);
       const normalizedValue = Number(normalizedByTool[name] || 0);
-      const value = rawValue > 0 ? rawValue : normalizedValue;
+      const value = normalizedValue > 0 ? normalizedValue : rawValue;
       return { name, value, rawValue, normalizedValue };
     })
     .filter((tool) => tool.value > 0 || tool.rawValue > 0)
@@ -474,8 +474,8 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
     valueLabel: formatCount(value),
     rawValueLabel: formatCount(rawValue),
     normalizedLabel: normalizedValue > 0 ? formatCount(normalizedValue) : "",
-    detail: normalizedValue > 0 && rawValue > 0 && rawValue !== normalizedValue
-      ? `折算 ${formatCount(normalizedValue)}`
+    detail: rawValue > 0 && rawValue !== value
+      ? `榜单分 ${formatCount(rawValue)}`
       : "",
     pct: Math.max(4, Math.round((value / max) * 100)),
   }));
@@ -1024,38 +1024,43 @@ function rankedTools(byTool = {}, total = 0) {
     .sort((a, b) => b.value - a.value);
 }
 
-function buildRankFacts({ rank, previous, next, gap, lead, sync }) {
-  const accepted = Number(state.lastUpload?.upstream?.json?.accepted || 0);
+function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal }) {
   const matched = Boolean(sync?.leaderboardMatched);
   const rankValue = rank ? `#${rank}` : "#--";
-  const gapLabel = rank === 1 ? formatCount(lead) : rank ? formatCount(gap) : "--";
-  const gapDetail = rank === 1
+  const scoreLabel = leaderboardTotal > 0 ? formatCount(leaderboardTotal) : "--";
+  const rankDetail = rank === 1
     ? (next?.name ? `领先 ${next.name}` : "榜单暂无下一名")
     : (previous?.name ? `距 ${previous.name}` : "等待榜单匹配");
+  const syncValue = matched ? "已同步" : sync?.uploaded ? "已上报" : "等待";
+  const syncDetail = matched
+    ? "已匹配今日排行榜"
+    : sync?.uploaded
+      ? "已上传，等待榜单匹配"
+      : "等待上传";
 
   return {
     source: matched ? "leaderboard" : "upload",
     items: [
       {
-        key: "rank",
-        label: "当前排名",
+        key: "leaderboard-score",
+        label: "榜单分",
+        valueLabel: scoreLabel,
+        detail: matched ? "含缓存读取，用于排行榜" : "等待排行榜匹配",
+        status: matched ? "ok" : "waiting",
+      },
+      {
+        key: "leaderboard-rank",
+        label: "榜单排名",
         valueLabel: rankValue,
-        detail: matched ? "来自今日排行榜" : "等待排行榜匹配",
+        detail: matched ? rankDetail : "等待榜单匹配",
         status: matched ? "ok" : "waiting",
       },
       {
-        key: rank === 1 ? "lead" : "gap",
-        label: rank === 1 ? "领先下一名" : "距上一名",
-        valueLabel: gapLabel,
-        detail: gapDetail,
-        status: matched ? "ok" : "waiting",
-      },
-      {
-        key: "accepted",
-        label: "上报接收",
-        valueLabel: accepted ? `${accepted} 条` : "--",
-        detail: sync?.label || "等待上传",
-        status: accepted ? "ok" : "waiting",
+        key: "sync",
+        label: "同步状态",
+        valueLabel: syncValue,
+        detail: syncDetail,
+        status: sync?.uploaded ? "ok" : "waiting",
       },
     ],
   };
@@ -1160,7 +1165,7 @@ function buildSyncStatus(uploadSummary, board) {
     return {
       status: "leaderboard",
       label: "已同步榜单",
-      detail: `已上报${accepted !== null ? ` ${accepted} 条` : ""}，并匹配到排行榜`,
+      detail: "已上报并匹配到排行榜",
       uploaded: true,
       leaderboardMatched: true,
       accepted,
@@ -1171,8 +1176,8 @@ function buildSyncStatus(uploadSummary, board) {
   if (uploaded) {
     const leaderboardError = board?.error ? String(board.error) : "";
     const detail = leaderboardError && entriesCount === 0
-      ? `已同步${accepted !== null ? ` ${accepted} 条记录` : "数据"}；排行榜刷新暂时失败：${leaderboardError}`
-      : `已同步${accepted !== null ? ` ${accepted} 条记录` : "数据"}；排行榜仅返回前 ${entriesCount || 0} 名，暂未返回当前账号`;
+      ? `已同步数据；排行榜刷新暂时失败：${leaderboardError}`
+      : `已同步数据；排行榜仅返回前 ${entriesCount || 0} 名，暂未返回当前账号`;
     return {
       status: "uploaded-not-ranked",
       label: "已上报",
@@ -1212,19 +1217,28 @@ async function buildSummary() {
       ? uploadRowsSummary.normalizedByTool
       : uploadSummary?.normalizedByTool || {},
   );
-  const byTool = normalizeToolMap(own?.byTool || uploadByTool);
-  const total = Number(own?.score || uploadSummary?.total || 0);
+  const byTool = normalizeToolMap(uploadByTool);
+  const leaderboardByTool = normalizeToolMap(own?.byTool || {});
+  const actualByTool = normalizedByTool;
+  const leaderboardTotal = Number(own?.score || uploadSummary?.total || 0);
+  const actualTotal = Number(
+    uploadRowsSummary?.normalized
+      || uploadSummary?.normalized
+      || Object.values(actualByTool).reduce((sum, value) => sum + Number(value || 0), 0)
+      || 0,
+  );
+  const total = actualTotal || leaderboardTotal;
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
   const tools = toolsFromUsageMaps(byTool, normalizedByTool);
-  const quotas = await quotaFeeds(byTool, total);
+  const quotas = await quotaFeeds(actualByTool, total);
   const trends = usageTrends(quotas);
-  const quotaAudit = buildQuotaAudit(byTool, quotas);
+  const quotaAudit = buildQuotaAudit(actualByTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
-  const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync });
+  const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal });
   const rankProgressPct = previous?.score
-    ? Math.max(4, Math.min(100, Math.round((total / Number(previous.score || 1)) * 100)))
+    ? Math.max(4, Math.min(100, Math.round((leaderboardTotal / Number(previous.score || 1)) * 100)))
     : rank === 1
       ? 100
       : 4;
@@ -1241,6 +1255,11 @@ async function buildSummary() {
     date: uploadSummary?.date || "",
     total,
     totalLabel: uploadSummary ? formatCount(total) : "--",
+    actualTotal,
+    actualTotalLabel: uploadSummary ? formatCount(actualTotal || total) : "--",
+    leaderboardTotal,
+    leaderboardTotalLabel: uploadSummary ? formatCount(leaderboardTotal) : "--",
+    leaderboardByTool,
     rank,
     rankLabel: rank ? `#${rank}` : "#--",
     previousName: previous?.name || "",

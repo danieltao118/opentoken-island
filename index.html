@@ -116,7 +116,7 @@
     }
     .hero {
       display: grid;
-      grid-template-columns: minmax(0,1fr) auto;
+      grid-template-columns: minmax(0,1fr);
       align-items: end;
       gap: 18px;
     }
@@ -135,7 +135,7 @@
     .rank {
       min-width: 96px;
       height: 64px;
-      display: grid;
+      display: none;
       place-items: center;
       border-radius: 18px;
       background: #fff;
@@ -334,7 +334,7 @@
       <div class="grid">
         <section class="hero">
           <div>
-            <p class="label">今日 OpenToken</p>
+            <p class="label">今日实际消耗</p>
             <p id="totalValue" class="value">--</p>
           </div>
           <div id="rankValue" class="rank">#--</div>
@@ -398,9 +398,9 @@
 
     function renderRankFacts(facts) {
       const fallback = [
-        { label: '当前排名', valueLabel: '#--', detail: '等待排行榜匹配' },
-        { label: '距上一名', valueLabel: '--', detail: '等待榜单数据' },
-        { label: '上报接收', valueLabel: '--', detail: '等待上传' }
+        { label: '榜单分', valueLabel: '--', detail: '等待排行榜匹配' },
+        { label: '榜单排名', valueLabel: '#--', detail: '等待榜单数据' },
+        { label: '同步状态', valueLabel: '等待', detail: '等待上传' }
       ];
       const items = facts && Array.isArray(facts.items) && facts.items.length ? facts.items : fallback;
       $('#rankFacts').innerHTML = items.slice(0, 3).map((item) =>
@@ -452,7 +452,7 @@
       const account = data.account && data.account.connected ? 'scys ' + data.account.accountId : '未绑定 scys';
       const daemon = data.service && data.service.running ? 'daemon running' : 'service unknown';
       const sync = data.sync && data.sync.label ? data.sync.label : data.source || 'waiting';
-      $('#totalValue').textContent = data.totalLabel || '--';
+      $('#totalValue').textContent = data.actualTotalLabel || data.totalLabel || '--';
       $('#rankValue').textContent = data.rankLabel || '#--';
       $('#serviceText').textContent = account + ' · ' + (data.date || '--') + ' · ' + sync + ' · ' + daemon;
       $('#serviceText').title = data.sync && data.sync.detail ? data.sync.detail : '';

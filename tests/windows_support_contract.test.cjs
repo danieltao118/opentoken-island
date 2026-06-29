@@ -156,6 +156,8 @@ assert.match(popoverHtml, /function openLogs/, "Log icon button should open the 
 assert.match(popoverHtml, /id="leaderboardButton"/, "Panel should expose a button for the public SCYS token ranking");
 assert.match(popoverHtml, /function openLeaderboard/, "Leaderboard button should open the real ranking page through the local API");
 assert.match(popoverHtml, /\/open-leaderboard/, "Leaderboard button should call the local default-browser opener");
+assert.match(popoverHtml, /actualTotalLabel/, "Popover hero should emphasize the actual fresh input and output total");
+assert.match(popoverHtml, /\.rank\{display:none\}/, "Popover should not visually attach raw leaderboard rank to the actual usage hero");
 assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leaderboard score as secondary detail");
 assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
@@ -183,6 +185,7 @@ assert.match(islandHtml, /rankProgressPct/, "Island progress should use real lea
 const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 assert.doesNotMatch(indexHtml, /Builder Lv|XP|rankDelta|xpText|rankGap|High Output|Codex Main|Hot Streak|216k|#17/, "Browser dashboard must not contain old synthetic demo metrics");
 assert.match(indexHtml, /renderRankFacts/, "Browser dashboard should render real leaderboard facts");
+assert.match(indexHtml, /actualTotalLabel/, "Browser dashboard hero should emphasize the actual fresh input and output total");
 assert.match(indexHtml, /fetch\(API \+ '\/summary'\)/, "Browser dashboard should fetch the live summary payload");
 
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
@@ -244,12 +247,18 @@ assert.match(serverJs, /周额度/, "Server should label the weekly quota bucket
 assert.match(serverJs, /Ready|准备|就绪|OpenToken/, "Service detection should treat a ready Windows scheduled task as healthy");
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
 assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve normalized usage per tool");
+assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the actual fresh input and output total for the main UI");
+assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
+assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
+assert.match(serverJs, /label: "榜单排名"/, "Rank facts should label ranking as a raw leaderboard fact");
+assert.match(serverJs, /label: "同步状态"/, "Rank facts should show sync state without exposing misleading accepted row counts");
+assert.doesNotMatch(serverJs, /label: "上报接收"[\s\S]*`\$\{accepted\} 条`/, "Panel facts must not show accepted row counts as a visible usage metric");
 assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
 assert.match(serverJs, /rawValueLabel/, "Tool usage rows should expose the raw leaderboard score separately");
 assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normalized effective usage separately");
-assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use leaderboard/raw usage as the primary visible value");
-assert.match(serverJs, /normalizedValue > 0[\s\S]*折算/, "Tool rows should show normalized usage only as secondary detail");
-assert.doesNotMatch(serverJs, /hasNormalizedUsage && normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not replace raw leaderboard usage with normalized usage");
+assert.match(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows should use actual normalized usage as the primary visible value");
+assert.match(serverJs, /rawValue > 0[\s\S]*榜单分/, "Tool rows should show raw leaderboard score only as secondary detail");
+assert.doesNotMatch(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows must not use cache-heavy raw leaderboard usage as the primary visible value");
 assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
 assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");
