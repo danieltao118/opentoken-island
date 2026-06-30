@@ -331,7 +331,7 @@ async function openLeaderboard() {
 async function load() {
   if (refreshPaused) return;
   try {
-    const response = await fetch(API + '/summary');
+    const response = await fetch(API + '/summary', { cache: 'no-store' });
     render(await response.json());
   } catch (error) {
     $('#serviceText').textContent = 'Live API unavailable';
@@ -357,4 +357,9 @@ load();
 setInterval(() => {
   if (!refreshPaused) load();
 }, 300000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) load();
+});
+window.addEventListener('focus', load);
+document.body.addEventListener('pointerenter', () => load());
 </script></body></html>

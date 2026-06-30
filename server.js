@@ -612,6 +612,13 @@ function localDateString(date = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+function isSameLocalDate(value, expectedDate = localDateString()) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return localDateString(date) === expectedDate;
+}
+
 function localHourKey(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}`;
@@ -1328,17 +1335,26 @@ async function openTokenPreviewSnapshot(preferredDate = "") {
 }
 
 async function buildSummary() {
-  const uploadSummary = state.lastUpload?.summary || null;
+  const today = localDateString();
+  const rawUploadSummary = state.lastUpload?.summary || null;
+  const uploadSummary = rawUploadSummary?.date === today ? rawUploadSummary : null;
   const uploadRowsSummary = uploadSummary
     ? summarizeRows(rowsFromPayload(state.lastUpload?.payload), uploadSummary.date)
     : null;
-  const previewSnapshot = await openTokenPreviewSnapshot(uploadSummary?.date || localDateString());
+  const previewSnapshot = await openTokenPreviewSnapshot(today);
   const usageSummary = previewSnapshot?.summary?.rowCount
     ? previewSnapshot.summary
     : uploadRowsSummary?.rowCount
       ? uploadRowsSummary
       : uploadSummary;
-  const board = state.leaderboard || null;
+  const usageSource = previewSnapshot?.summary?.rowCount
+    ? "local-preview"
+    : uploadRowsSummary?.rowCount
+      ? "upload"
+      : uploadSummary
+        ? "upload"
+        : "waiting";
+  const board = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
   const own = board?.own || null;
   const previous = board?.previous || null;
   const next = board?.next || null;
@@ -1381,7 +1397,7 @@ async function buildSummary() {
   return {
     ok: true,
     waiting: !uploadSummary && !usageSummary?.rowCount,
-    source: own ? "leaderboard" : usageSummary?.rowCount ? "local-preview" : uploadSummary ? "upload" : "waiting",
+    source: own ? "leaderboard" : usageSource,
     sync,
     syncLabel: sync.label,
     leaderboardMatched: sync.leaderboardMatched,

@@ -151,6 +151,10 @@ assert.doesNotMatch(popoverHtml, /visibleTools\(data\.tools\)/, "Tool usage rows
 assert.doesNotMatch(popoverHtml, /!\s*\/\^codex\$\/i\.test/, "Codex usage should not be filtered out of agent usage stats");
 assert.match(popoverHtml, /id="pauseButton"/, "Pause button should have an explicit behavior hook");
 assert.match(popoverHtml, /function toggleRefreshPause/, "Pause button should pause and resume panel auto-refresh");
+assert.match(popoverHtml, /fetch\(API \+ '\/summary', \{ cache: 'no-store' \}\)/, "Popover summary reads should bypass WebView HTTP cache");
+assert.match(popoverHtml, /visibilitychange[\s\S]*load\(\)/, "Popover should refresh when a hidden WebView becomes visible again");
+assert.match(popoverHtml, /addEventListener\('focus', load\)/, "Popover should refresh when the pinned panel receives focus");
+assert.match(popoverHtml, /pointerenter[\s\S]*load\(\)/, "Popover should refresh when the tray-hover panel is shown again");
 assert.match(popoverHtml, /id="logButton"/, "Log icon button should have an explicit behavior hook");
 assert.match(popoverHtml, /function openLogs/, "Log icon button should open the local event log");
 assert.match(popoverHtml, /id="leaderboardButton"/, "Panel should expose a button for the public SCYS token ranking");
@@ -186,7 +190,7 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 assert.doesNotMatch(indexHtml, /Builder Lv|XP|rankDelta|xpText|rankGap|High Output|Codex Main|Hot Streak|216k|#17/, "Browser dashboard must not contain old synthetic demo metrics");
 assert.match(indexHtml, /renderRankFacts/, "Browser dashboard should render real leaderboard facts");
 assert.match(indexHtml, /actualTotalLabel/, "Browser dashboard hero should emphasize the actual fresh input and output total");
-assert.match(indexHtml, /fetch\(API \+ '\/summary'\)/, "Browser dashboard should fetch the live summary payload");
+assert.match(indexHtml, /fetch\(API \+ '\/summary', \{ cache: 'no-store' \}\)/, "Browser dashboard should fetch the live summary payload without HTTP cache");
 
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
 assert.match(
@@ -256,6 +260,12 @@ assert.match(serverJs, /周额度/, "Server should label the weekly quota bucket
 assert.match(serverJs, /Ready|准备|就绪|OpenToken/, "Service detection should treat a ready Windows scheduled task as healthy");
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
 assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve normalized usage per tool");
+assert.match(serverJs, /function isSameLocalDate/, "Summary must compare persisted timestamps against the current local day");
+assert.doesNotMatch(serverJs, /openTokenPreviewSnapshot\(uploadSummary\?\.date \|\| localDateString\(\)\)/, "Daily summary must not keep previewing yesterday because the last upload summary is stale");
+assert.match(serverJs, /const today = localDateString\(\)/, "Summary should anchor all local preview and stale-cache checks to today's date");
+assert.match(serverJs, /rawUploadSummary\?\.date === today/, "Summary should ignore persisted upload summaries from previous days");
+assert.match(serverJs, /isSameLocalDate\(state\.leaderboard\?\.updatedAt, today\)/, "Summary should ignore persisted leaderboard matches from previous days");
+assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
 assert.match(serverJs, /const displayByTool = hasLeaderboardScore[\s\S]*\? leaderboardByTool[\s\S]*: byTool/, "When leaderboard is matched, visible total and tool rows should use the same SCYS leaderboard source");
 assert.match(serverJs, /const actualTotal = Number\(\s*hasLeaderboardScore\s*\? leaderboardTotal/, "The main visible total should equal the leaderboard score once the account is matched");
 assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the leaderboard-aligned usage total for the main UI");
