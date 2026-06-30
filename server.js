@@ -1364,7 +1364,7 @@ async function buildSummary() {
   );
   const byTool = normalizeToolMap(usageByTool);
   const leaderboardByTool = normalizeToolMap(own?.byTool || {});
-  const leaderboardTotal = Number(own?.score || uploadSummary?.total || 0);
+  const leaderboardTotal = Number(own?.score || 0);
   const hasLeaderboardScore = Boolean(own && leaderboardTotal > 0);
   const displayByTool = hasLeaderboardScore && Object.keys(leaderboardByTool).length
     ? leaderboardByTool
@@ -1409,7 +1409,7 @@ async function buildSummary() {
     actualTotal,
     actualTotalLabel: usageSummary || uploadSummary ? formatCount(actualTotal || total) : "--",
     leaderboardTotal,
-    leaderboardTotalLabel: uploadSummary ? formatCount(leaderboardTotal) : "--",
+    leaderboardTotalLabel: hasLeaderboardScore ? formatCount(leaderboardTotal) : "--",
     leaderboardByTool,
     rank,
     rankLabel: rank ? `#${rank}` : "#--",

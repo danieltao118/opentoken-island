@@ -266,6 +266,9 @@ assert.match(serverJs, /const today = localDateString\(\)/, "Summary should anch
 assert.match(serverJs, /rawUploadSummary\?\.date === today/, "Summary should ignore persisted upload summaries from previous days");
 assert.match(serverJs, /isSameLocalDate\(state\.leaderboard\?\.updatedAt, today\)/, "Summary should ignore persisted leaderboard matches from previous days");
 assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
+assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");
+assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/, "Leaderboard total should only come from the matched SCYS leaderboard row");
+assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
 assert.match(serverJs, /const displayByTool = hasLeaderboardScore[\s\S]*\? leaderboardByTool[\s\S]*: byTool/, "When leaderboard is matched, visible total and tool rows should use the same SCYS leaderboard source");
 assert.match(serverJs, /const actualTotal = Number\(\s*hasLeaderboardScore\s*\? leaderboardTotal/, "The main visible total should equal the leaderboard score once the account is matched");
 assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the leaderboard-aligned usage total for the main UI");
