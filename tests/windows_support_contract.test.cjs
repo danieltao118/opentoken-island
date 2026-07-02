@@ -265,6 +265,14 @@ assert.doesNotMatch(serverJs, /openTokenPreviewSnapshot\(uploadSummary\?\.date \
 assert.match(serverJs, /const today = localDateString\(\)/, "Summary should anchor all local preview and stale-cache checks to today's date");
 assert.match(serverJs, /rawUploadSummary\?\.date === today/, "Summary should ignore persisted upload summaries from previous days");
 assert.match(serverJs, /isSameLocalDate\(state\.leaderboard\?\.updatedAt, today\)/, "Summary should ignore persisted leaderboard matches from previous days");
+assert.match(serverJs, /LEADERBOARD_AUTO_REFRESH_INTERVAL_MS/, "Normal panel refreshes should retry stale leaderboard matches without hammering SCYS");
+assert.match(serverJs, /function leaderboardBehindUsage/, "Summary should detect when a persisted leaderboard row is behind today's uploaded usage");
+assert.match(serverJs, /score < usageTotal/, "A leaderboard score below the local uploaded total must be treated as stale");
+assert.match(serverJs, /function refreshLeaderboardIfStale/, "Summary endpoint should automatically retry public leaderboard refresh after eventual-consistency lag");
+assert.match(serverJs, /url\.searchParams\.set\("_ts"/, "Leaderboard refresh should bypass stale intermediary cache");
+assert.match(serverJs, /"cache-control": "no-cache"/, "Leaderboard refresh should explicitly request uncached data");
+assert.match(serverJs, /boardIsBehind[\s\S]*own: null/, "Stale leaderboard rows must not drive the visible total or rank");
+assert.match(serverJs, /status: "leaderboard-refreshing"/, "Sync status should say the public leaderboard is still refreshing instead of claiming synced");
 assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
 assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");
 assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/, "Leaderboard total should only come from the matched SCYS leaderboard row");

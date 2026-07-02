@@ -19,6 +19,7 @@ const ZAI_CODING_API_BASE = "https://api.z.ai";
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
 const PREVIEW_CACHE_TTL_MS = 45 * 1000;
+const LEADERBOARD_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
 const dnsFallbackCache = new Map();
 
@@ -33,6 +34,7 @@ const mime = {
 let state = loadState();
 let quotaCache = { at: 0, zai: null };
 let previewCache = { at: 0, date: "", snapshot: null };
+let leaderboardAutoRefresh = { at: 0, promise: null };
 const OPENTOKEN = process.env.OPENTOKEN_BIN || findOpenTokenBinary() || state.opentokenBin || "opentoken";
 
 function loadState() {
@@ -1186,12 +1188,46 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function refreshLeaderboard(summary, previousRank = null) {
-  const endpoint = "https://scys.com/tokenrank/api/subapp/leaderboard?board=total&range=today&limit=500";
+function withCacheBust(targetUrl) {
+  const url = new URL(targetUrl);
+  url.searchParams.set("_ts", String(Date.now()));
+  return url.toString();
+}
+
+function leaderboardBehindUsage(board, usageSummary) {
+  if (!board?.own || !usageSummary) return false;
+  const usageTotal = Number(usageSummary.total || 0);
+  const score = Number(board.own.score || 0);
+  return usageTotal > 0 && score > 0 && score < usageTotal;
+}
+
+function leaderboardOlderThanLastUpload(board) {
+  const boardAt = Date.parse(board?.updatedAt || "");
+  const uploadAt = Date.parse(state.lastUpload?.capturedAt || "");
+  return Number.isFinite(boardAt) && Number.isFinite(uploadAt) && boardAt + 1000 < uploadAt;
+}
+
+function shouldRefreshLeaderboardForUpload(uploadSummary, board, today) {
+  if (!uploadSummary || uploadSummary.date !== today || Number(uploadSummary.total || 0) <= 0) return false;
+  if (!state.lastUpload?.upstream?.ok) return false;
+  if (!board?.own || !board?.leaderboardMatched) return true;
+  return leaderboardBehindUsage(board, uploadSummary) || leaderboardOlderThanLastUpload(board);
+}
+
+async function refreshLeaderboard(summary, previousRank = null, options = {}) {
+  const baseEndpoint = "https://scys.com/tokenrank/api/subapp/leaderboard?board=total&range=today&limit=500";
+  const outerAttempts = Number(options.outerAttempts || 4);
+  const requestAttempts = Number(options.requestAttempts || 2);
+  const timeoutMs = Number(options.timeoutMs || 15000);
   let lastResult = null;
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await requestTextWithRetry("GET", endpoint, "", { accept: "application/json" }, 15000, 2);
+  for (let attempt = 0; attempt < outerAttempts; attempt += 1) {
+    const endpoint = withCacheBust(baseEndpoint);
+    const result = await requestTextWithRetry("GET", endpoint, "", {
+      accept: "application/json",
+      "cache-control": "no-cache",
+      pragma: "no-cache",
+    }, timeoutMs, requestAttempts);
     lastResult = result;
     const entries = Array.isArray(result.json?.entries) ? result.json.entries : [];
     const own = findOwnEntry(entries, summary);
@@ -1224,7 +1260,7 @@ async function refreshLeaderboard(summary, previousRank = null) {
       return state.leaderboard;
     }
 
-    if (attempt < 3) await sleep(900);
+    if (attempt < outerAttempts - 1) await sleep(900);
   }
 
   state.leaderboard = {
@@ -1237,6 +1273,23 @@ async function refreshLeaderboard(summary, previousRank = null) {
   };
   saveState();
   return state.leaderboard;
+}
+
+async function refreshLeaderboardIfStale(today, { force = false } = {}) {
+  const uploadSummary = state.lastUpload?.summary || null;
+  const board = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
+  if (!force && !shouldRefreshLeaderboardForUpload(uploadSummary, board, today)) return null;
+  if (!force && Date.now() - leaderboardAutoRefresh.at < LEADERBOARD_AUTO_REFRESH_INTERVAL_MS) return null;
+  if (leaderboardAutoRefresh.promise) return leaderboardAutoRefresh.promise;
+
+  leaderboardAutoRefresh.at = Date.now();
+  const previousRank = state.leaderboard?.own?.rank ? Number(state.leaderboard.own.rank) : null;
+  const options = force ? {} : { outerAttempts: 1, requestAttempts: 1, timeoutMs: 8000 };
+  leaderboardAutoRefresh.promise = refreshLeaderboard(uploadSummary, previousRank, options)
+    .finally(() => {
+      leaderboardAutoRefresh.promise = null;
+    });
+  return leaderboardAutoRefresh.promise;
 }
 
 function buildSyncStatus(uploadSummary, board) {
@@ -1252,6 +1305,18 @@ function buildSyncStatus(uploadSummary, board) {
       label: "等待上报",
       detail: "尚未捕获 OpenToken 上传数据",
       uploaded: false,
+      leaderboardMatched: false,
+      accepted,
+      entriesCount,
+    };
+  }
+
+  if (board?.stale) {
+    return {
+      status: "leaderboard-refreshing",
+      label: "等待榜单刷新",
+      detail: board.error || "已上报数据；公开榜单仍在重新计算，暂不使用旧榜单分",
+      uploaded: true,
       leaderboardMatched: false,
       accepted,
       entriesCount,
@@ -1354,7 +1419,19 @@ async function buildSummary() {
       : uploadSummary
         ? "upload"
         : "waiting";
-  const board = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
+  const rawBoard = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
+  const boardIsBehind = leaderboardBehindUsage(rawBoard, usageSummary || uploadSummary);
+  const board = boardIsBehind
+    ? {
+        ...rawBoard,
+        own: null,
+        previous: null,
+        next: null,
+        leaderboardMatched: false,
+        stale: true,
+        error: "已上报数据；公开榜单仍在重新计算，暂不使用旧榜单分",
+      }
+    : rawBoard;
   const own = board?.own || null;
   const previous = board?.previous || null;
   const next = board?.next || null;
@@ -1537,9 +1614,12 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/summary") {
+    const today = localDateString();
     if (url.searchParams.get("refresh") === "1" && state.lastUpload?.summary) {
       previewCache = { at: 0, date: "", snapshot: null };
-      await refreshLeaderboard(state.lastUpload.summary, state.leaderboard?.own?.rank || null);
+      await refreshLeaderboardIfStale(today, { force: true });
+    } else {
+      await refreshLeaderboardIfStale(today);
     }
     return json(res, 200, {
       ...await buildSummary(),
