@@ -215,6 +215,17 @@ assert.match(
 );
 
 const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
+const officialOpenTokenCandidate = 'path.join(HOME, ".opentoken", "bin", "opentoken.exe")';
+const legacyOpenTokenCandidate = 'path.join(HOME, ".local", "bin", "opentoken.exe")';
+assert.ok(
+  serverJs.indexOf(officialOpenTokenCandidate) < serverJs.indexOf(legacyOpenTokenCandidate),
+  "Windows GUI must prefer the official .opentoken binary over a legacy .local command"
+);
+assert.match(
+  serverJs,
+  /const rawBoard = isSameLocalDate\(state\.leaderboard\?\.updatedAt, today\) \? state\.leaderboard : null;[\s\S]{0,200}const previewSnapshot = rawBoard\?\.own[\s\S]{0,120}await openTokenPreviewSnapshot\(today\)/,
+  "Summary reads with a matched same-day leaderboard must not block on a local preview scan"
+);
 assert.match(serverJs, /CODING_QUOTA_CONFIG_PATH/, "Server must know where Coding Quota Bar stores provider config");
 assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quota feed");
 assert.match(serverJs, /quotaFeeds/, "Summary payload must expose quota feeds to the UI");

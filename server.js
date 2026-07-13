@@ -48,8 +48,8 @@ function loadState() {
 function findOpenTokenBinary() {
   const candidates = process.platform === "win32"
     ? [
-        path.join(HOME, ".local", "bin", "opentoken.exe"),
         path.join(HOME, ".opentoken", "bin", "opentoken.exe"),
+        path.join(HOME, ".local", "bin", "opentoken.exe"),
       ]
     : [
         path.join(HOME, ".local", "bin", "opentoken"),
@@ -1406,7 +1406,10 @@ async function buildSummary() {
   const uploadRowsSummary = uploadSummary
     ? summarizeRows(rowsFromPayload(state.lastUpload?.payload), uploadSummary.date)
     : null;
-  const previewSnapshot = await openTokenPreviewSnapshot(today);
+  const rawBoard = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
+  const previewSnapshot = rawBoard?.own
+    ? null
+    : await openTokenPreviewSnapshot(today);
   const usageSummary = previewSnapshot?.summary?.rowCount
     ? previewSnapshot.summary
     : uploadRowsSummary?.rowCount
@@ -1419,7 +1422,6 @@ async function buildSummary() {
       : uploadSummary
         ? "upload"
         : "waiting";
-  const rawBoard = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
   const boardIsBehind = leaderboardBehindUsage(rawBoard, usageSummary || uploadSummary);
   const board = boardIsBehind
     ? {
