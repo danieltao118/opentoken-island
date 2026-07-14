@@ -1159,7 +1159,7 @@ function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTota
         label: "同步状态",
         valueLabel: syncValue,
         detail: syncDetail,
-        status: sync?.uploaded ? "ok" : "waiting",
+        status: sync?.uploaded || matched ? "ok" : "waiting",
       },
     ],
   };
@@ -1299,6 +1299,18 @@ function buildSyncStatus(uploadSummary, board) {
   const leaderboardMatched = Boolean(board?.own || board?.leaderboardMatched);
   const entriesCount = Number(board?.entriesCount || 0);
 
+  if (!uploadSummary && leaderboardMatched) {
+    return {
+      status: "leaderboard",
+      label: "已同步榜单",
+      detail: "已匹配今日排行榜；本地最新上传明细暂未捕获",
+      uploaded: Boolean(upstream.ok),
+      leaderboardMatched: true,
+      accepted,
+      entriesCount,
+    };
+  }
+
   if (!uploadSummary) {
     return {
       status: "waiting",
@@ -1315,9 +1327,9 @@ function buildSyncStatus(uploadSummary, board) {
     return {
       status: "leaderboard-refreshing",
       label: "等待榜单刷新",
-      detail: board.error || "已上报数据；公开榜单仍在重新计算，暂不使用旧榜单分",
+      detail: board.error || "已上报数据；公开榜单仍在重新计算，榜单分和排名保留为上次公开结果",
       uploaded: true,
-      leaderboardMatched: false,
+      leaderboardMatched,
       accepted,
       entriesCount,
     };
@@ -1426,12 +1438,8 @@ async function buildSummary() {
   const board = boardIsBehind
     ? {
         ...rawBoard,
-        own: null,
-        previous: null,
-        next: null,
-        leaderboardMatched: false,
         stale: true,
-        error: "已上报数据；公开榜单仍在重新计算，暂不使用旧榜单分",
+        error: "已上报数据；公开榜单仍在重新计算，榜单分和排名保留为上次公开结果",
       }
     : rawBoard;
   const own = board?.own || null;
@@ -1445,18 +1453,19 @@ async function buildSummary() {
   const leaderboardByTool = normalizeToolMap(own?.byTool || {});
   const leaderboardTotal = Number(own?.score || 0);
   const hasLeaderboardScore = Boolean(own && leaderboardTotal > 0);
-  const displayByTool = hasLeaderboardScore && Object.keys(leaderboardByTool).length
+  const useLeaderboardForMain = hasLeaderboardScore && !boardIsBehind;
+  const displayByTool = useLeaderboardForMain && Object.keys(leaderboardByTool).length
     ? leaderboardByTool
     : byTool;
   const uploadRawTotal = Number(usageSummary?.total || uploadSummary?.total || 0);
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
-  const quotas = await quotaFeeds(displayByTool, hasLeaderboardScore ? leaderboardTotal : uploadRawTotal || leaderboardTotal);
+  const quotas = await quotaFeeds(displayByTool, useLeaderboardForMain ? leaderboardTotal : uploadRawTotal || leaderboardTotal);
   const trends = usageTrends(quotas);
   const actualUsage = actualUsageSummary(displayByTool, normalizedByTool);
   const actualTotal = Number(
-    hasLeaderboardScore
+    useLeaderboardForMain
       ? leaderboardTotal
       : actualUsage.total || uploadRawTotal || leaderboardTotal || 0,
   );
@@ -1475,18 +1484,18 @@ async function buildSummary() {
 
   return {
     ok: true,
-    waiting: !uploadSummary && !usageSummary?.rowCount,
+    waiting: !uploadSummary && !usageSummary?.rowCount && !hasLeaderboardScore,
     source: own ? "leaderboard" : usageSource,
     sync,
     syncLabel: sync.label,
     leaderboardMatched: sync.leaderboardMatched,
     capturedAt: state.lastUpload?.capturedAt || "",
     leaderboardUpdatedAt: board?.updatedAt || "",
-    date: usageSummary?.date || uploadSummary?.date || "",
+    date: usageSummary?.date || uploadSummary?.date || (hasLeaderboardScore ? today : ""),
     total,
-    totalLabel: usageSummary || uploadSummary ? formatCount(total) : "--",
+    totalLabel: usageSummary || uploadSummary || hasLeaderboardScore ? formatCount(total) : "--",
     actualTotal,
-    actualTotalLabel: usageSummary || uploadSummary ? formatCount(actualTotal || total) : "--",
+    actualTotalLabel: usageSummary || uploadSummary || hasLeaderboardScore ? formatCount(actualTotal || total) : "--",
     leaderboardTotal,
     leaderboardTotalLabel: hasLeaderboardScore ? formatCount(leaderboardTotal) : "--",
     leaderboardByTool,
@@ -1547,15 +1556,21 @@ async function handleUploadProxy(req, res, url) {
   const body = bodyBuffer.toString("utf8");
   const payload = safeJson(body);
   const summary = summarizeRows(rowsFromPayload(payload));
+  const hasTokenUsage = Boolean(summary.date) && Number(summary.total || 0) > 0;
   const previousRank = state.leaderboard?.own?.rank ? Number(state.leaderboard.own.rank) : null;
 
-  state.lastUpload = {
+  const uploadRecord = {
     capturedAt: new Date().toISOString(),
     path: redactedPath,
     payload,
     summary,
   };
-  previewCache = { at: 0, date: "", snapshot: null };
+  if (hasTokenUsage) {
+    state.lastUpload = uploadRecord;
+    previewCache = { at: 0, date: "", snapshot: null };
+  } else {
+    state.lastActivityUpload = uploadRecord;
+  }
   saveState();
   logIslandEvent("captured upload payload", {
     path: redactedPath,
@@ -1570,7 +1585,7 @@ async function handleUploadProxy(req, res, url) {
     "user-agent": req.headers["user-agent"] || "opentoken-island/0.1",
   }, 30000, 4);
 
-  state.lastUpload.upstream = {
+  uploadRecord.upstream = {
     status: upstream.status,
     ok: upstream.ok,
     body: upstream.body,
@@ -1584,7 +1599,7 @@ async function handleUploadProxy(req, res, url) {
     accepted: upstream.json?.accepted ?? null,
   });
 
-  if (upstream.ok && summary.total > 0) {
+  if (upstream.ok && hasTokenUsage) {
     const leaderboard = await refreshLeaderboard(summary, previousRank);
     logIslandEvent("refreshed leaderboard", {
       rank: leaderboard?.own?.rank ?? null,

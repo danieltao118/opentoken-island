@@ -254,6 +254,7 @@ assert.match(serverJs, /\/api\/open-logs/, "Server should expose an API endpoint
 assert.match(serverJs, /function openLogsFile/, "Server should open the local OpenToken Island event log");
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");
 assert.match(serverJs, /leaderboardMatched/, "Sync state must distinguish uploaded data from leaderboard matches");
+assert.match(serverJs, /if \(!uploadSummary && leaderboardMatched\)[\s\S]{0,260}status: "leaderboard"/, "A matched public leaderboard must remain visible when the latest local payload has no token rows");
 assert.match(serverJs, /function openTokenPreviewSnapshot/, "Summary payload should prefer a full local OpenToken preview snapshot over incremental upload payloads");
 assert.match(serverJs, /\["preview", "--since", date, "--json"\]/, "OpenToken preview snapshots should use the JSON rows that represent the full local daily state");
 assert.doesNotMatch(serverJs, /const uploadByTool = uploadRowsSummary\?\.rowCount[\s\S]{0,80}\? uploadRowsSummary\.byTool/, "Summary must not treat incremental upload payloads as the full local usage source");
@@ -282,15 +283,17 @@ assert.match(serverJs, /score < usageTotal/, "A leaderboard score below the loca
 assert.match(serverJs, /function refreshLeaderboardIfStale/, "Summary endpoint should automatically retry public leaderboard refresh after eventual-consistency lag");
 assert.match(serverJs, /url\.searchParams\.set\("_ts"/, "Leaderboard refresh should bypass stale intermediary cache");
 assert.match(serverJs, /"cache-control": "no-cache"/, "Leaderboard refresh should explicitly request uncached data");
-assert.match(serverJs, /boardIsBehind[\s\S]*own: null/, "Stale leaderboard rows must not drive the visible total or rank");
+assert.doesNotMatch(serverJs, /boardIsBehind[\s\S]*own: null/, "A lagging leaderboard must retain its last known official score and rank as secondary facts");
+assert.match(serverJs, /const useLeaderboardForMain = hasLeaderboardScore && !boardIsBehind/, "A lagging leaderboard score must not replace the newer local actual total");
 assert.match(serverJs, /status: "leaderboard-refreshing"/, "Sync status should say the public leaderboard is still refreshing instead of claiming synced");
 assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
 assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");
 assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/, "Leaderboard total should only come from the matched SCYS leaderboard row");
 assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
-assert.match(serverJs, /const displayByTool = hasLeaderboardScore[\s\S]*\? leaderboardByTool[\s\S]*: byTool/, "When leaderboard is matched, visible total and tool rows should use the same SCYS leaderboard source");
-assert.match(serverJs, /const actualTotal = Number\(\s*hasLeaderboardScore\s*\? leaderboardTotal/, "The main visible total should equal the leaderboard score once the account is matched");
+assert.match(serverJs, /const displayByTool = useLeaderboardForMain[\s\S]*\? leaderboardByTool[\s\S]*: byTool/, "A fresh matched leaderboard should drive the visible total and tool rows");
+assert.match(serverJs, /const actualTotal = Number\(\s*useLeaderboardForMain\s*\? leaderboardTotal/, "The main visible total should use local usage while the public leaderboard is still catching up");
 assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the leaderboard-aligned usage total for the main UI");
+assert.match(serverJs, /totalLabel: usageSummary \|\| uploadSummary \|\| hasLeaderboardScore \? formatCount\(total\) : "--"/, "A matched leaderboard score must render even after a token-free activity upload");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
 assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
 assert.match(serverJs, /label: "榜单排名"/, "Rank facts should label ranking as a raw leaderboard fact");
@@ -302,6 +305,8 @@ assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normali
 assert.doesNotMatch(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not use normalized input+output as the primary visible usage");
 assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use raw actual usage as the primary visible value");
 assert.match(serverJs, /function actualUsageSummary/, "Summary should build one audited actual-usage total across live sources");
+assert.match(serverJs, /const hasTokenUsage = Boolean\(summary\.date\) && Number\(summary\.total \|\| 0\) > 0;/, "Token-free activity payloads must not overwrite the last daily usage snapshot");
+assert.match(serverJs, /if \(hasTokenUsage\) \{[\s\S]{0,260}state\.lastUpload =/, "Only payloads with token rows may replace the last daily usage snapshot");
 assert.doesNotMatch(serverJs, /usageToolEntry\(\s*"glm"[\s\S]*Coding Quota Bar 24h/, "Coding Quota Bar GLM provider trends must not be included in the actual usage total");
 assert.match(serverJs, /const codexValue = Number\(rawByTool\.codex \|\| 0\)/, "Codex actual usage should use raw OpenToken tokens including cache reads");
 assert.match(serverJs, /const claudeValue = Number\(rawByTool\["claude-code"\] \|\| 0\)[\s\S]*if \(claudeValue > 0\)/, "Claude Code OpenToken rows should remain in the actual usage total");
