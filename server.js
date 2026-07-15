@@ -205,6 +205,24 @@ function run(cmd, args, timeout = 30000) {
   });
 }
 
+// 手动 Upload now：opentoken upload 全量 scan codex 原始日志常 >120s（codex 单日日志即 >45s），
+// 同步等待会卡死面板。改为后台触发、立即返回 202，前端靠 summary 轮询看数据更新。
+let backgroundUploadRunning = false;
+function triggerBackgroundUpload() {
+  if (backgroundUploadRunning) return;
+  backgroundUploadRunning = true;
+  logIslandEvent("manual upload started", { via: "/api/upload" });
+  run(OPENTOKEN, ["upload"], 600000)
+    .then((result) => {
+      if (result.ok) previewCache = { at: 0, date: "", snapshot: null };
+      logIslandEvent("manual upload finished", {
+        ok: result.ok,
+        ...(result.ok ? {} : { error: (result.stderr || result.stdout || result.message || "upload failed").slice(0, 200) }),
+      });
+    })
+    .finally(() => { backgroundUploadRunning = false; });
+}
+
 function openExternalUrl(targetUrl) {
   return new Promise((resolve) => {
     const opener = process.platform === "win32"
@@ -1453,7 +1471,9 @@ async function buildSummary() {
   const leaderboardByTool = normalizeToolMap(own?.byTool || {});
   const leaderboardTotal = Number(own?.score || 0);
   const hasLeaderboardScore = Boolean(own && leaderboardTotal > 0);
-  const useLeaderboardForMain = hasLeaderboardScore && !boardIsBehind;
+  // 主数始终跟随已匹配的公开榜单分（与 scys 网页同口径）；
+  // 不再用 boardIsBehind 闸门——raw 与榜单分口径不同源会让比较恒真、主数钉死在 raw。
+  const useLeaderboardForMain = hasLeaderboardScore;
   const displayByTool = useLeaderboardForMain && Object.keys(leaderboardByTool).length
     ? leaderboardByTool
     : byTool;
@@ -1648,14 +1668,13 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/upload") {
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
     ensureProxyConfig();
-    const result = await run(OPENTOKEN, ["upload"], 120000);
-    previewCache = { at: 0, date: "", snapshot: null };
-    return json(res, result.ok ? 200 : 500, {
-      ok: result.ok,
-      output: (result.stdout || result.stderr || result.message).trim(),
-      summary: await buildSummary(),
-      account: accountStatus(),
-      service: await serviceStatus(),
+    // opentoken upload 全量 scan codex 日志常 >120s，同步等待会卡死面板。
+    // 改后台触发、立即返回 202，前端靠 summary 轮询看数据更新。
+    triggerBackgroundUpload();
+    return json(res, 202, {
+      ok: true,
+      async: true,
+      message: "后台上报已触发，数据将在刷新后更新",
     });
   }
 
@@ -1729,7 +1748,17 @@ const server = http.createServer((req, res) => {
   return serveStatic(req, res, url);
 });
 
-ensureProxyConfig();
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`OpenToken Island proxy running at http://127.0.0.1:${PORT}`);
-});
+if (require.main === module) {
+  ensureProxyConfig();
+  server.listen(PORT, "127.0.0.1", () => {
+    console.log(`OpenToken Island proxy running at http://127.0.0.1:${PORT}`);
+  });
+}
+
+// 供单元测试直接驱动 buildSummary（require 时不 listen，避免端口冲突）
+module.exports = {
+  buildSummary,
+  localDateString,
+  setState(next) { state = next; },
+  getState() { return state; },
+};

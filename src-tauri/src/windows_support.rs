@@ -8,8 +8,9 @@ pub const STARTUP_RUN_VALUE_NAME: &str = "OpenTokenIsland";
 
 pub fn opentoken_bin_candidates(home: &Path) -> Vec<PathBuf> {
     vec![
-        home.join(".local").join("bin").join("opentoken.exe"),
+        // 官方新版客户端优先（.opentoken\bin），旧版 .local\bin 仅作回落
         home.join(".opentoken").join("bin").join("opentoken.exe"),
+        home.join(".local").join("bin").join("opentoken.exe"),
     ]
 }
 
@@ -166,7 +167,7 @@ mod tests {
         let path = opentoken_bin(Path::new(r"C:\Users\ty"));
         assert_eq!(
             path,
-            PathBuf::from(r"C:\Users\ty\.local\bin\opentoken.exe")
+            PathBuf::from(r"C:\Users\ty\.opentoken\bin\opentoken.exe")
         );
     }
 

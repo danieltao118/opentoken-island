@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, "..");
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
 
 const pkg = readJson("package.json");
-assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs");
+assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/build_summary.test.cjs");
 assert.equal(pkg.scripts["tauri:dev"], "tauri dev");
 assert.equal(pkg.scripts["tauri:build"], "tauri build");
 assert.equal(pkg.devDependencies["@tauri-apps/cli"], "^2.11.3");
@@ -208,10 +208,15 @@ assert.match(
   /startup_registry_args\(exe: &Path\) -> Vec<String>/,
   "Startup registry arguments should be generated in a testable helper"
 );
-assert.match(
-  windowsSupport,
-  /home\.join\("\.local"\)\.join\("bin"\)\.join\("opentoken\.exe"\)/,
-  "Windows shell should prefer the same .local OpenToken binary used by the scheduled uploader"
+const officialRsCandidate = 'home.join(".opentoken").join("bin").join("opentoken.exe")';
+const legacyRsCandidate = 'home.join(".local").join("bin").join("opentoken.exe")';
+assert.ok(
+  windowsSupport.indexOf(officialRsCandidate) >= 0 && windowsSupport.indexOf(legacyRsCandidate) >= 0,
+  "Windows GUI should know both the official .opentoken and legacy .local OpenToken binaries"
+);
+assert.ok(
+  windowsSupport.indexOf(officialRsCandidate) < windowsSupport.indexOf(legacyRsCandidate),
+  "Windows GUI must prefer the official .opentoken binary over the legacy .local command"
 );
 
 const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
@@ -284,7 +289,7 @@ assert.match(serverJs, /function refreshLeaderboardIfStale/, "Summary endpoint s
 assert.match(serverJs, /url\.searchParams\.set\("_ts"/, "Leaderboard refresh should bypass stale intermediary cache");
 assert.match(serverJs, /"cache-control": "no-cache"/, "Leaderboard refresh should explicitly request uncached data");
 assert.doesNotMatch(serverJs, /boardIsBehind[\s\S]*own: null/, "A lagging leaderboard must retain its last known official score and rank as secondary facts");
-assert.match(serverJs, /const useLeaderboardForMain = hasLeaderboardScore && !boardIsBehind/, "A lagging leaderboard score must not replace the newer local actual total");
+assert.match(serverJs, /const useLeaderboardForMain = hasLeaderboardScore\b(?!\s*&&)/, "The main visible total must always follow the matched public leaderboard score so it mirrors the SCYS webpage");
 assert.match(serverJs, /status: "leaderboard-refreshing"/, "Sync status should say the public leaderboard is still refreshing instead of claiming synced");
 assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
 assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");

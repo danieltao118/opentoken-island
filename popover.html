@@ -341,8 +341,23 @@ async function load() {
 $('#uploadButton').onclick = async () => {
   setLoad(true);
   try {
-    await fetch(API + '/upload', { method: 'POST' });
+    const response = await fetch(API + '/upload', { method: 'POST' });
+    const result = await response.json();
+    if (result.async) {
+      $('#serviceText').textContent = '后台上报已触发，稍后自动刷新';
+      $('#serviceText').title = result.message || '';
+    } else if (result.ok) {
+      $('#serviceText').textContent = '上报成功';
+      $('#serviceText').title = '';
+    } else {
+      const detail = String(result.output || result.error || '上报失败').slice(0, 120);
+      $('#serviceText').textContent = '上报失败：' + detail;
+      $('#serviceText').title = String(result.output || result.error || '');
+    }
     await load();
+  } catch (error) {
+    $('#serviceText').textContent = '上报请求失败：server 未响应或网络错误';
+    $('#serviceText').title = String((error && error.message) || error || '');
   } finally {
     setLoad(false);
   }
