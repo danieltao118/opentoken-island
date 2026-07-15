@@ -1402,7 +1402,9 @@ async function openTokenPreviewSnapshot(preferredDate = "") {
     return previewCache.snapshot;
   }
 
-  const result = await run(OPENTOKEN, ["preview", "--since", date, "--json"], 120000);
+  // 限时 10s：codex 海量日志 scan 常远超 10s，超时则降级用 uploadSummary（见 buildSummary 回落），
+  // 避免未上榜时 preview 拖死整个 /api/summary。
+  const result = await run(OPENTOKEN, ["preview", "--since", date, "--json"], 10000);
   if (!result.ok) {
     const snapshot = {
       ok: false,
