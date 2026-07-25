@@ -19,6 +19,8 @@ const ZAI_CODING_API_BASE = "https://api.z.ai";
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
 const PREVIEW_CACHE_TTL_MS = 45 * 1000;
+// 全量 preview 只在后台刷新；Codex 历史较多时需要分钟级，不应再用 GUI 热路径的 10 秒上限。
+const FULL_PREVIEW_TIMEOUT_MS = 10 * 60 * 1000;
 const LEADERBOARD_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
 const dnsFallbackCache = new Map();
@@ -37,9 +39,12 @@ let previewCache = { at: 0, date: "", snapshot: null };
 // claude-code 单工具用量缓存：opentoken upload 全量扫描常超时漏传 claude-code，
 // 这里用秒级的 `preview --tool claude-code` 单独补全本地真实用量。缓存同时保留原始
 // rows，供上传中转补全 payload 复用（让真实 claude-code 消耗真正上传到 scys 榜单）。
-let claudeCodeCache = { at: 0, date: "", rows: [], claudeValue: 0 };
+let claudeCodeCache = { at: 0, date: "", rows: [], summary: null, claudeValue: 0 };
+let usageRefresh = { date: "", promise: null };
 let leaderboardAutoRefresh = { at: 0, promise: null };
-const OPENTOKEN = process.env.OPENTOKEN_BIN || findOpenTokenBinary() || state.opentokenBin || "opentoken";
+// Windows 上旧版桌面进程会遗留 OPENTOKEN_BIN=.local\\bin\\opentoken.exe。
+// 已探测到官方新版时必须优先使用它，不能让陈旧环境变量把统计回退到 0.2.x。
+const OPENTOKEN = findOpenTokenBinary() || process.env.OPENTOKEN_BIN || state.opentokenBin || "opentoken";
 
 function loadState() {
   try {
@@ -496,7 +501,7 @@ function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
     .filter((tool) => tool.value > 0 || tool.rawValue > 0)
     .sort((a, b) => b.value - a.value);
   const max = Math.max(1, ...entries.map((tool) => tool.value));
-  return entries.slice(0, 6).map(({ name, value, rawValue, normalizedValue }) => ({
+  return entries.map(({ name, value, rawValue, normalizedValue }) => ({
     name,
     value,
     rawValue,
@@ -538,7 +543,7 @@ function finalizeUsageTools(entries = []) {
     .filter((tool) => Number(tool.value || 0) > 0)
     .sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
   const max = Math.max(1, ...filtered.map((tool) => Number(tool.value || 0)));
-  return filtered.slice(0, 6).map((tool) => ({
+  return filtered.map((tool) => ({
     ...tool,
     pct: Math.max(4, Math.round((Number(tool.value || 0) / max) * 100)),
   }));
@@ -1406,9 +1411,8 @@ async function openTokenPreviewSnapshot(preferredDate = "") {
     return previewCache.snapshot;
   }
 
-  // 限时 10s：codex 海量日志 scan 常远超 10s，超时则降级用 uploadSummary（见 buildSummary 回落），
-  // 避免未上榜时 preview 拖死整个 /api/summary。
-  const result = await run(OPENTOKEN, ["preview", "--since", date, "--json"], 10000);
+  // 此扫描由 refreshUsageInBackground 调度，绝不阻塞 /api/summary；允许 Codex 海量日志完成。
+  const result = await run(OPENTOKEN, ["preview", "--since", date, "--json"], FULL_PREVIEW_TIMEOUT_MS);
   if (!result.ok) {
     const snapshot = {
       ok: false,
@@ -1435,6 +1439,18 @@ async function openTokenPreviewSnapshot(preferredDate = "") {
   return snapshot;
 }
 
+function refreshUsageInBackground(date = localDateString()) {
+  if (usageRefresh.promise && usageRefresh.date === date) return usageRefresh.promise;
+  const refresh = Promise.allSettled([
+    openTokenPreviewSnapshot(date),
+    openTokenClaudeCodeUsage(date),
+  ]).finally(() => {
+    if (usageRefresh.promise === refresh) usageRefresh = { date: "", promise: null };
+  });
+  usageRefresh = { date, promise: refresh };
+  return refresh;
+}
+
 // 单工具扫描 claude-code 用量。`opentoken upload` 全量扫描在这台机器上常因 codex
 // 海量日志超时（>120s），导致上传 payload 和公开榜单 own.byTool 都不含 claude-code。
 // 这里改用秒级的 `preview --tool claude-code`（只解析 claude 日志，不碰 codex），
@@ -1451,11 +1467,15 @@ async function openTokenClaudeCodeUsage(preferredDate = "") {
 
   // claude-code 单工具日志小，不会触发 codex 全量扫描的超时问题。
   const result = await run(OPENTOKEN, ["preview", "--tool", "claude-code", "--json"], 10000);
+  if (!result.ok) {
+    claudeCodeCache = { at: Date.now(), date, rows: [], summary: null, claudeValue: 0 };
+    return claudeCodeCache;
+  }
   const payload = safeJson(result.stdout);
   const rows = rowsFromPayload(payload);
   const summary = summarizeRows(rows, date);
   const claudeValue = Number(summary.byTool["claude-code"] || 0);
-  claudeCodeCache = { at: Date.now(), date, rows, claudeValue };
+  claudeCodeCache = { at: Date.now(), date, rows, summary, claudeValue };
   return claudeCodeCache;
 }
 
@@ -1463,12 +1483,14 @@ async function openTokenClaudeCodeUsage(preferredDate = "") {
 // 增量账本漏掉的模型）。返回 preview 的全量 claude-code 行，调用方丢弃 payload 里
 // 旧的 claude-code 行后再注入，避免 scys 端同 (date,model) 行被偏小旧值占位，
 // 导致排行榜分因口径缺失而排不进前 200。让真实 claude-code 消耗随 opentoken→scys 上传。
-function augmentClaudeCodeRows() {
+function augmentClaudeCodeRows(date) {
   // 本地 preview 扫到的 claude-code 行是权威值（含 claude-opus-5 等增量计费漏掉的模型）。
   // 返回 preview 的全量 claude-code 行，调用方丢弃 payload 里旧的 claude-code 行，
   // 避免 scys 端同 (date,model) 行被偏小的旧值占位，导致排行榜分排不进前 200。
-  if (!Array.isArray(claudeCodeCache.rows) || !claudeCodeCache.rows.length) return [];
-  return claudeCodeCache.rows.filter((r) => r && r.tool === "claude-code");
+  if (!date || !Array.isArray(claudeCodeCache.rows) || !claudeCodeCache.rows.length) return [];
+  return claudeCodeCache.rows.filter((r) =>
+    r && r.tool === "claude-code" && String(r.date || "") === String(date),
+  );
 }
 
 async function buildSummary() {
@@ -1479,9 +1501,10 @@ async function buildSummary() {
     ? summarizeRows(rowsFromPayload(state.lastUpload?.payload), uploadSummary.date)
     : null;
   const rawBoard = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
-  const previewSnapshot = rawBoard?.own
-    ? null
-    : await openTokenPreviewSnapshot(today);
+  // /summary 是 GUI 的热路径：绝不能等待全量 Codex 扫描。先返回已知缓存，扫描在
+  // 后台并行进行；下一次轮询会拿到新快照，面板不会因单次扫描卡死十几秒。
+  if (!rawBoard?.own) refreshUsageInBackground(today);
+  const previewSnapshot = previewCache.date === today ? previewCache.snapshot : null;
   const usageSummary = previewSnapshot?.summary?.rowCount
     ? previewSnapshot.summary
     : uploadRowsSummary?.rowCount
@@ -1516,14 +1539,14 @@ async function buildSummary() {
   // 主数始终跟随已匹配的公开榜单分（与 scys 网页同口径）；
   // 不再用 boardIsBehind 闸门——raw 与榜单分口径不同源会让比较恒真、主数钉死在 raw。
   const useLeaderboardForMain = hasLeaderboardScore;
-  let displayByTool = useLeaderboardForMain && Object.keys(leaderboardByTool).length
-    ? leaderboardByTool
-    : byTool;
+  // 工具明细与“实际消耗”统一使用原始本地 Token；只有本地没有任何行时才回退
+  // 榜单的工具构成。榜单分仍独立用于排名，不再覆盖本地明细。
+  let displayByTool = Object.keys(byTool).length ? byTool : leaderboardByTool;
   // opentoken upload 在本机常因 codex 海量日志全量扫描超时，导致上传 payload 与公开榜单
   // own.byTool 里的 claude-code 不可靠（缺失或偏小）。这里始终用秒级单工具全量 preview
   // 的 claude-code 值覆盖工具构成（仅展示，不计入主数）。主数/榜单分/排名仍钉死在
   // leaderboard 口径，与既有「等待榜单刷新」逻辑一致。
-  const claudeByTool = await openTokenClaudeCodeUsage(today);
+  const claudeByTool = claudeCodeCache.date === today ? claudeCodeCache : null;
   if (claudeByTool && claudeByTool.claudeValue > 0) {
     displayByTool = { ...displayByTool, "claude-code": claudeByTool.claudeValue };
   }
@@ -1534,11 +1557,9 @@ async function buildSummary() {
   const quotas = await quotaFeeds(displayByTool, useLeaderboardForMain ? leaderboardTotal : uploadRawTotal || leaderboardTotal);
   const trends = usageTrends(quotas);
   const actualUsage = actualUsageSummary(displayByTool, normalizedByTool);
-  const actualTotal = Number(
-    useLeaderboardForMain
-      ? leaderboardTotal
-      : actualUsage.total || uploadRawTotal || leaderboardTotal || 0,
-  );
+  // “实际消耗”必须是原始 Token（与各工具行可加总），排行榜另有自己的归一化计分。
+  // 两者都返回给 UI，避免把榜单分误标为实际消耗。
+  const actualTotal = Number(actualUsage.total || uploadRawTotal || 0);
   const total = actualTotal || leaderboardTotal;
   const tools = actualUsage.tools.length
     ? actualUsage.tools
@@ -1554,18 +1575,18 @@ async function buildSummary() {
 
   return {
     ok: true,
-    waiting: !uploadSummary && !usageSummary?.rowCount && !hasLeaderboardScore,
-    source: own ? "leaderboard" : usageSource,
+    waiting: !uploadSummary && !usageSummary?.rowCount && !hasLeaderboardScore && !claudeByTool?.claudeValue,
+    source: own ? "leaderboard" : (usageSummary?.rowCount ? usageSource : (claudeByTool?.claudeValue ? "claude-preview" : usageSource)),
     sync,
     syncLabel: sync.label,
     leaderboardMatched: sync.leaderboardMatched,
     capturedAt: state.lastUpload?.capturedAt || "",
     leaderboardUpdatedAt: board?.updatedAt || "",
-    date: usageSummary?.date || uploadSummary?.date || (hasLeaderboardScore ? today : ""),
+    date: usageSummary?.date || uploadSummary?.date || (claudeByTool?.claudeValue || hasLeaderboardScore ? today : ""),
     total,
-    totalLabel: usageSummary || uploadSummary || hasLeaderboardScore ? formatCount(total) : "--",
+    totalLabel: usageSummary || uploadSummary || claudeByTool?.claudeValue || hasLeaderboardScore ? formatCount(total) : "--",
     actualTotal,
-    actualTotalLabel: usageSummary || uploadSummary || hasLeaderboardScore ? formatCount(actualTotal || total) : "--",
+    actualTotalLabel: usageSummary || uploadSummary || claudeByTool?.claudeValue || hasLeaderboardScore ? formatCount(actualTotal || total) : "--",
     leaderboardTotal,
     leaderboardTotalLabel: hasLeaderboardScore ? formatCount(leaderboardTotal) : "--",
     leaderboardByTool,
@@ -1592,6 +1613,10 @@ async function buildSummary() {
       error: previewSnapshot?.error || "",
       rowCount: Number(previewSnapshot?.summary?.rowCount || 0),
       capturedAt: previewCache.at ? new Date(previewCache.at).toISOString() : "",
+    },
+    runtime: {
+      opentokenBin: OPENTOKEN,
+      refreshingUsage: Boolean(usageRefresh.promise && usageRefresh.date === today),
     },
     upstream: {
       accepted: state.lastUpload?.upstream?.json?.accepted ?? null,
@@ -1654,13 +1679,19 @@ async function handleUploadProxy(req, res, url) {
   // 这里先用秒级 `preview --tool claude-code` 填充本地真实 rows（填充缓存），
   // 再把 payload 里缺失的 claude-code 行补进去，重新序列化后转发给 scys。
   let forwardBody = body;
-  if (payload && Array.isArray(payload.rows)) {
-    await openTokenClaudeCodeUsage().catch(() => null);
-    const ccRows = augmentClaudeCodeRows();
+  if (payload && Array.isArray(payload.rows) && summary.date) {
+    await openTokenClaudeCodeUsage(summary.date).catch(() => null);
+    const ccRows = augmentClaudeCodeRows(summary.date);
     if (ccRows.length) {
-      const replacedRows = payload.rows.filter((r) => r && r.tool === "claude-code").length;
+      const replacedRows = payload.rows.filter((r) =>
+        r && r.tool === "claude-code" && String(r.date || "") === String(summary.date),
+      ).length;
       const augmentedRows = [
-        ...payload.rows.filter((r) => !(r && r.tool === "claude-code")),
+        ...payload.rows.filter((r) => !(
+          r
+          && r.tool === "claude-code"
+          && String(r.date || "") === String(summary.date)
+        )),
         ...ccRows,
       ];
       const augmentedPayload = { ...payload, rows: augmentedRows };

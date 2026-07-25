@@ -161,7 +161,7 @@ assert.match(popoverHtml, /id="leaderboardButton"/, "Panel should expose a butto
 assert.match(popoverHtml, /function openLeaderboard/, "Leaderboard button should open the real ranking page through the local API");
 assert.match(popoverHtml, /\/open-leaderboard/, "Leaderboard button should call the local default-browser opener");
 assert.match(popoverHtml, /actualTotalLabel/, "Popover hero should emphasize the actual fresh input and output total");
-assert.match(popoverHtml, /\.rank\{display:none\}/, "Popover should not visually attach raw leaderboard rank to the actual usage hero");
+assert.match(popoverHtml, /\.rank\{display:grid/, "Popover should visibly render the real leaderboard rank");
 assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leaderboard score as secondary detail");
 assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
@@ -228,8 +228,8 @@ assert.ok(
 );
 assert.match(
   serverJs,
-  /const rawBoard = isSameLocalDate\(state\.leaderboard\?\.updatedAt, today\) \? state\.leaderboard : null;[\s\S]{0,200}const previewSnapshot = rawBoard\?\.own[\s\S]{0,120}await openTokenPreviewSnapshot\(today\)/,
-  "Summary reads with a matched same-day leaderboard must not block on a local preview scan"
+  /if \(!rawBoard\?\.own\) refreshUsageInBackground\(today\);[\s\S]{0,160}const previewSnapshot = previewCache\.date === today \? previewCache\.snapshot : null/,
+  "Summary reads must return cached data and refresh local usage in the background"
 );
 assert.match(serverJs, /CODING_QUOTA_CONFIG_PATH/, "Server must know where Coding Quota Bar stores provider config");
 assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quota feed");
@@ -289,22 +289,21 @@ assert.match(serverJs, /function refreshLeaderboardIfStale/, "Summary endpoint s
 assert.match(serverJs, /url\.searchParams\.set\("_ts"/, "Leaderboard refresh should bypass stale intermediary cache");
 assert.match(serverJs, /"cache-control": "no-cache"/, "Leaderboard refresh should explicitly request uncached data");
 assert.doesNotMatch(serverJs, /boardIsBehind[\s\S]*own: null/, "A lagging leaderboard must retain its last known official score and rank as secondary facts");
-assert.match(serverJs, /const useLeaderboardForMain = hasLeaderboardScore\b(?!\s*&&)/, "The main visible total must always follow the matched public leaderboard score so it mirrors the SCYS webpage");
+assert.match(serverJs, /const useLeaderboardForMain = hasLeaderboardScore\b(?!\s*&&)/, "Leaderboard availability should remain available for rank-related metadata");
 assert.match(serverJs, /status: "leaderboard-refreshing"/, "Sync status should say the public leaderboard is still refreshing instead of claiming synced");
 assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
 assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");
 assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/, "Leaderboard total should only come from the matched SCYS leaderboard row");
 assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
-  assert.match(serverJs, /(const|let) displayByTool = useLeaderboardForMain[\s\S]*\? leaderboardByTool[\s\S]*: byTool/, "A fresh matched leaderboard should drive the visible total and tool rows");
+  assert.match(serverJs, /let displayByTool = Object\.keys\(byTool\)\.length \? byTool : leaderboardByTool/, "Visible tool rows should prefer raw local usage over leaderboard score breakdowns");
   assert.match(serverJs, /openTokenClaudeCodeUsage[\s\S]*"preview",\s*"--tool",\s*"claude-code"/, "Claude Code usage should be backfilled via a single-tool preview scan that avoids the full-scan timeout");
-  assert.match(serverJs, /const claudeByTool = await openTokenClaudeCodeUsage\(today\)[\s\S]*claudeByTool\.claudeValue > 0[\s\S]*displayByTool = \{ \.\.\.displayByTool, "claude-code": claudeByTool\.claudeValue \}/, "Claude Code usage from the local full preview should always override the unreliable upload/leaderboard view");
+  assert.match(serverJs, /const claudeByTool = claudeCodeCache\.date === today \? claudeCodeCache : null;[\s\S]*claudeByTool\.claudeValue > 0[\s\S]*displayByTool = \{ \.\.\.displayByTool, "claude-code": claudeByTool\.claudeValue \}/, "Claude Code usage should use the completed local cache without blocking the GUI");
   assert.match(serverJs, /function augmentClaudeCodeRows/, "Upload proxy must expose a helper that augments missing claude-code rows before forwarding to SCYS");
-  assert.match(serverJs, /let forwardBody = body[\s\S]*augmentClaudeCodeRows\(\)[\s\S]*forwardBody = JSON\.stringify\(augmentedPayload\)/, "Upload proxy must backfill real claude-code rows into the forwarded payload, not just the local display");
-  assert.match(serverJs, /payload\.rows\.filter\(\(r\) => !\(r && r\.tool === "claude-code"\)\)/, "Upload proxy must drop stale claude-code rows from the payload before injecting the authoritative local preview rows, so an under-counted (date,model) row can not pin the SCYS leaderboard score below the top-200 cutoff");
-  assert.match(serverJs, /useLeaderboardForMain\s*\?\s*leaderboardTotal\s*:[\s\S]*actualUsage\.total/, "When the leaderboard is matched the main total must stay pinned to the leaderboard score even after Claude Code backfill");
-assert.match(serverJs, /const actualTotal = Number\(\s*useLeaderboardForMain\s*\? leaderboardTotal/, "The main visible total should use local usage while the public leaderboard is still catching up");
-assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose the leaderboard-aligned usage total for the main UI");
-assert.match(serverJs, /totalLabel: usageSummary \|\| uploadSummary \|\| hasLeaderboardScore \? formatCount\(total\) : "--"/, "A matched leaderboard score must render even after a token-free activity upload");
+  assert.match(serverJs, /let forwardBody = body[\s\S]*openTokenClaudeCodeUsage\(summary\.date\)[\s\S]*augmentClaudeCodeRows\(summary\.date\)[\s\S]*forwardBody = JSON\.stringify\(augmentedPayload\)/, "Upload proxy must backfill real claude-code rows for the payload date only");
+  assert.match(serverJs, /String\(r\.date \|\| ""\) === String\(summary\.date\)/, "Upload proxy must replace only same-day Claude rows and preserve other dated records");
+assert.match(serverJs, /const actualTotal = Number\(actualUsage\.total \|\| uploadRawTotal \|\| 0\)/, "The main visible total must be raw local usage, not a leaderboard score");
+assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose raw actual usage for the main UI");
+assert.match(serverJs, /totalLabel: usageSummary \|\| uploadSummary \|\| claudeByTool\?\.claudeValue \|\| hasLeaderboardScore/, "A completed Claude-only cache should render while the full preview is refreshing");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
 assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
 assert.match(serverJs, /label: "榜单排名"/, "Rank facts should label ranking as a raw leaderboard fact");

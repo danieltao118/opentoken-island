@@ -1,12 +1,11 @@
-// 防回归测试：直接驱动 buildSummary，验证「实际消耗」主数口径。
+// 防回归测试：直接驱动 buildSummary，验证「实际消耗」与「榜单分」分开返回。
 //
 // 背景：commit e2873fb 引入 useLeaderboardForMain = hasLeaderboardScore && !boardIsBehind。
 // 因 raw token(含 cache_read，~15.72亿) 与公开榜单分(~5.61亿) 口径不同源，
 // leaderboardBehindUsage 的 score < usageTotal 恒为 true → boardIsBehind 恒 true
 // → useLeaderboardForMain 恒 false → actualTotal 永远走 raw 分支，主数钉死且永不更新。
 //
-// 修复后：useLeaderboardForMain = hasLeaderboardScore，主数始终对齐已匹配的公开榜单分。
-// 本测试构造「今日榜单已匹配 + 存在更大 raw 上传快照」的场景，锁定主数 = 榜单分。
+// 修复后：实际消耗始终是原始 Token；榜单分和排名使用排行榜口径，不能混用。
 const assert = require("assert");
 const path = require("path");
 
@@ -16,7 +15,7 @@ const { buildSummary, setState, localDateString } = require(path.resolve(__dirna
   const today = localDateString();
   const nowIso = new Date().toISOString();
 
-  // 场景：今日榜单已匹配 own(榜单分 5.61亿)，同时存在 raw 15.72亿 的 lastUpload 快照
+  // 场景：今日榜单已匹配 own(榜单分 5.61亿)，同时存在 raw 15.72亿 的 lastUpload 快照。
   setState({
     leaderboard: {
       updatedAt: nowIso,
@@ -45,13 +44,13 @@ const { buildSummary, setState, localDateString } = require(path.resolve(__dirna
     ),
   ]);
 
-  // 核心断言：主数对齐榜单分
+  // 核心断言：实际消耗与榜单分分开，工具项可加总为实际消耗。
   assert.equal(summary.source, "leaderboard", `source 应为 leaderboard，实际=${summary.source}`);
-  assert.equal(summary.actualTotal, 560854063, `actualTotal 应对齐榜单分 560854063，实际=${summary.actualTotal}`);
-  assert.equal(summary.actualTotal, summary.leaderboardTotal, "actualTotal 应等于 leaderboardTotal");
-  assert.notEqual(summary.actualTotal, 1571758301, "actualTotal 不应仍是 raw 15.72亿（e2873fb 死循环回归）");
+  assert.equal(summary.actualTotal, 1571758301, `actualTotal 应为原始消耗 15.72亿，实际=${summary.actualTotal}`);
+  assert.equal(summary.leaderboardTotal, 560854063, "leaderboardTotal 应保留榜单分");
+  assert.notEqual(summary.actualTotal, summary.leaderboardTotal, "实际消耗不得被榜单分覆盖");
 
-  console.log(`build summary ok: actualTotal=${summary.actualTotal}（对齐榜单分 ${summary.actualTotalLabel}）`);
+  console.log(`build summary ok: raw=${summary.actualTotal}，leaderboard=${summary.leaderboardTotal}`);
 })().catch((err) => {
   console.error("build summary test FAILED:", err.message);
   process.exit(1);
