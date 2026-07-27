@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, "..");
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
 
 const pkg = readJson("package.json");
-assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/build_summary.test.cjs");
+assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/build_summary.test.cjs");
 assert.equal(pkg.scripts["tauri:dev"], "tauri dev");
 assert.equal(pkg.scripts["tauri:build"], "tauri build");
 assert.equal(pkg.devDependencies["@tauri-apps/cli"], "^2.11.3");
@@ -162,6 +162,14 @@ assert.match(popoverHtml, /function openLeaderboard/, "Leaderboard button should
 assert.match(popoverHtml, /\/open-leaderboard/, "Leaderboard button should call the local default-browser opener");
 assert.match(popoverHtml, /actualTotalLabel/, "Popover hero should emphasize the actual fresh input and output total");
 assert.match(popoverHtml, /\.rank\{display:grid/, "Popover should visibly render the real leaderboard rank");
+assert.match(popoverHtml, /实际 Token（原始）/, "Hero should distinguish raw actual usage from the normalized leaderboard score");
+assert.match(popoverHtml, /id="serviceText"[^>]*role="status"[^>]*aria-live="polite"/, "Service updates should be announced accessibly");
+assert.ok(
+  popoverHtml.indexOf('id="toolList"') < popoverHtml.indexOf('id="rankFacts"')
+    && popoverHtml.indexOf('id="rankFacts"') < popoverHtml.indexOf('id="quotaList"')
+    && popoverHtml.indexOf('id="quotaList"') < popoverHtml.indexOf('id="usageTrend"'),
+  "Panel sections should follow actual usage, leaderboard context, quota, then trend",
+);
 assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leaderboard score as secondary detail");
 assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
@@ -171,6 +179,15 @@ assert.match(popoverHtml, /class="trend-tabs"/, "Popover should switch 24h, 7d, 
 assert.match(popoverHtml, /function setTrendPeriod/, "Trend tabs should update the focused usage period without crowding the panel");
 assert.match(popoverHtml, /class="trend-detail"/, "Hourly trend bars should expose readable in-panel details");
 assert.match(popoverHtml, /data-trend-index/, "Trend bars should support selecting an hour to inspect exact usage");
+assert.match(popoverHtml, /const TREND_PERIOD_KEYS = \['24h', '7d', '30d'\]/, "Trend tabs must remain fixed even when one API period fails");
+assert.match(popoverHtml, /TREND_PERIOD_KEYS\.map/, "Trend rendering should merge periods into the fixed view contract");
+assert.match(popoverHtml, /本轮读取失败，将自动重试/, "Trend errors must not be mislabeled as no data");
+assert.match(popoverHtml, /该时段暂无 Token 消耗/, "A valid empty period should have a distinct zero-usage message");
+assert.match(popoverHtml, /峰值小时' : '峰值日期/, "Trend summary labels should distinguish hourly and daily periods");
+assert.match(popoverHtml, /选中小时' : '选中日期/, "Trend selection labels should distinguish hourly and daily periods");
+assert.match(popoverHtml, /aria-pressed=/, "Trend tabs and bars should expose their selected state");
+assert.equal((popoverHtml.match(/function renderTrendBars\(/g) || []).length, 1, "Trend bars must have one authoritative renderer");
+assert.equal((popoverHtml.match(/function renderUsageTrend\(/g) || []).length, 1, "Usage trends must have one authoritative renderer");
 assert.doesNotMatch(popoverHtml, /class="badges"|function renderBadges|function renderQuests|Hot Streak|Daily Quest/, "Low-value gamification badges and quests should not crowd out quota data");
 assert.doesNotMatch(popoverHtml, /Builder Lv|XP|class="game"|rankDelta|xpText|rankGap|level-line|battle/, "Panel must not show synthetic level, XP, or game battle data");
 assert.match(popoverHtml, /id="rankFacts"/, "Panel should replace game data with real leaderboard facts");
@@ -278,6 +295,7 @@ assert.match(serverJs, /Ready|准备|就绪|OpenToken/, "Service detection shoul
 assert.match(serverJs, /function normalizeToolName/, "Tool names should be normalized before ranking");
 assert.match(serverJs, /normalizedByTool/, "Upload summaries should preserve normalized usage per tool");
 assert.match(serverJs, /function isSameLocalDate/, "Summary must compare persisted timestamps against the current local day");
+assert.match(serverJs, /const date = preferredDate \|\| dates\[dates\.length - 1\] \|\| ""/, "An explicit daily summary date must not fall back to the previous day");
 assert.doesNotMatch(serverJs, /openTokenPreviewSnapshot\(uploadSummary\?\.date \|\| localDateString\(\)\)/, "Daily summary must not keep previewing yesterday because the last upload summary is stale");
 assert.match(serverJs, /const today = localDateString\(\)/, "Summary should anchor all local preview and stale-cache checks to today's date");
 assert.match(serverJs, /rawUploadSummary\?\.date === today/, "Summary should ignore persisted upload summaries from previous days");
@@ -297,6 +315,11 @@ assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/,
 assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
   assert.match(serverJs, /let displayByTool = Object\.keys\(byTool\)\.length \? byTool : leaderboardByTool/, "Visible tool rows should prefer raw local usage over leaderboard score breakdowns");
   assert.match(serverJs, /openTokenClaudeCodeUsage[\s\S]*"preview",\s*"--tool",\s*"claude-code"/, "Claude Code usage should be backfilled via a single-tool preview scan that avoids the full-scan timeout");
+  assert.match(serverJs, /refreshClaudeCodeInBackground\(today\);[\s\S]*if \(!rawBoard\?\.own\) refreshUsageInBackground\(today\)/, "Claude Code refresh must still run after a leaderboard match while the expensive full scan stays conditional");
+  assert.match(serverJs, /claudeCodeRefresh\.promise[\s\S]*return claudeCodeRefresh\.promise/, "Concurrent panel polls should share one Claude Code scan");
+  assert.match(serverJs, /function retainLastGoodClaudeUsage/, "Transient Claude Code scan failures should retain the latest successful daily value");
+  assert.match(serverJs, /function uploadableClaudeRows[\s\S]*status !== "ok"[\s\S]*return \[\]/, "Stale Claude GUI rows must never replace a newer upload payload");
+  assert.match(serverJs, /claudeCodeStatus:/, "Summary diagnostics should expose whether Claude Code data is fresh, stale, or still loading");
   assert.match(serverJs, /const claudeByTool = claudeCodeCache\.date === today \? claudeCodeCache : null;[\s\S]*claudeByTool\.claudeValue > 0[\s\S]*displayByTool = \{ \.\.\.displayByTool, "claude-code": claudeByTool\.claudeValue \}/, "Claude Code usage should use the completed local cache without blocking the GUI");
   assert.match(serverJs, /function augmentClaudeCodeRows/, "Upload proxy must expose a helper that augments missing claude-code rows before forwarding to SCYS");
   assert.match(serverJs, /let forwardBody = body[\s\S]*openTokenClaudeCodeUsage\(summary\.date\)[\s\S]*augmentClaudeCodeRows\(summary\.date\)[\s\S]*forwardBody = JSON\.stringify\(augmentedPayload\)/, "Upload proxy must backfill real claude-code rows for the payload date only");
@@ -306,7 +329,7 @@ assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose raw ac
 assert.match(serverJs, /totalLabel: usageSummary \|\| uploadSummary \|\| claudeByTool\?\.claudeValue \|\| hasLeaderboardScore/, "A completed Claude-only cache should render while the full preview is refreshing");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
 assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
-assert.match(serverJs, /label: "榜单排名"/, "Rank facts should label ranking as a raw leaderboard fact");
+assert.match(serverJs, /label: distanceLabel/, "Rank facts should show the distance to an adjacent rank instead of duplicating the hero rank");
 assert.match(serverJs, /label: "同步状态"/, "Rank facts should show sync state without exposing misleading accepted row counts");
 assert.doesNotMatch(serverJs, /label: "上报接收"[\s\S]*`\$\{accepted\} 条`/, "Panel facts must not show accepted row counts as a visible usage metric");
 assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
@@ -325,8 +348,13 @@ assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.pay
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
 assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");
 assert.match(serverJs, /history24h/, "Server should expose a recent-24-hour GLM trend for the default panel view");
-assert.match(serverJs, /zaiUsagePeriod\("24h",\s*"24h"[\s\S]*24/, "Recent-24-hour GLM trend should keep hourly buckets instead of compacting to three coarse blocks");
-assert.match(serverJs, /periods:\s*\[history24h,\s*history7d,\s*history30d\]/, "Server should order trend periods for compact 24h-first switching");
+assert.match(serverJs, /zaiUsagePeriod\("24h",\s*"24小时"[\s\S]*24/, "Recent-24-hour GLM trend should keep hourly buckets instead of compacting to three coarse blocks");
+assert.match(serverJs, /const periods = \[history24h, history7d, history30d\]/, "Server should order trend periods for compact 24h-first switching");
+assert.match(serverJs, /recentDailyUsageHistory\(resp30d, 7\)/, "Seven-day usage should be derived from the validated 30-day detail response");
+assert.match(serverJs, /function zaiUsageResponseState/, "Z.ai trend responses should validate both payload code and array shape");
+assert.match(serverJs, /function retainLastGoodZaiQuota/, "Transient Z.ai failures should retain the most recent successful trend data");
+assert.match(serverJs, /const activeRefresh = quotaRefreshPromises\.get\(fingerprint\)[\s\S]*if \(activeRefresh\) return activeRefresh/, "Concurrent panel polls should share one Z.ai refresh request");
+assert.match(serverJs, /function zaiAccountFingerprint[\s\S]*zaiLastGoodByAccount\.get\(fingerprint\)/, "Last-known-good trends must be isolated when the Z.ai account changes");
 assert.match(serverJs, /model-usage\?startTime/, "GLM trends should use the same model-usage endpoint as Coding Quota Bar");
 assert.match(serverJs, /usageTrends/, "Summary payload should include chart-ready usage trends");
 assert.match(serverJs, /function buildQuotaAudit/, "Summary payload should explain which agents have reliable quota sources");

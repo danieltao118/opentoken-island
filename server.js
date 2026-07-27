@@ -3,6 +3,7 @@ const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const { execFile, execFileSync } = require("child_process");
 
 const PORT = Number(process.env.OPENTOKEN_ISLAND_PORT || 4174);
@@ -34,13 +35,17 @@ const mime = {
 };
 
 let state = loadState();
-let quotaCache = { at: 0, zai: null };
+let quotaCache = { at: 0, fingerprint: "", zai: null };
+const zaiLastGoodByAccount = new Map();
+const quotaRefreshPromises = new Map();
 let previewCache = { at: 0, date: "", snapshot: null };
 // claude-code 单工具用量缓存：opentoken upload 全量扫描常超时漏传 claude-code，
 // 这里用秒级的 `preview --tool claude-code` 单独补全本地真实用量。缓存同时保留原始
 // rows，供上传中转补全 payload 复用（让真实 claude-code 消耗真正上传到 scys 榜单）。
-let claudeCodeCache = { at: 0, date: "", rows: [], summary: null, claudeValue: 0 };
+let claudeCodeCache = { at: 0, date: "", status: "waiting", rows: [], summary: null, claudeValue: 0 };
+const claudeCodeLastGoodByDate = new Map();
 let usageRefresh = { date: "", promise: null };
+let claudeCodeRefresh = { date: "", promise: null };
 let leaderboardAutoRefresh = { at: 0, promise: null };
 // Windows 上旧版桌面进程会遗留 OPENTOKEN_BIN=.local\\bin\\opentoken.exe。
 // 已探测到官方新版时必须优先使用它，不能让陈旧环境变量把统计回退到 0.2.x。
@@ -466,9 +471,9 @@ function normalizeToolMap(byTool = {}) {
 
 function summarizeRows(rows, preferredDate = "") {
   const dates = [...new Set(rows.map((row) => row.date).filter(Boolean))].sort();
-  const date = preferredDate && dates.includes(preferredDate)
-    ? preferredDate
-    : dates[dates.length - 1] || "";
+  // 传入日期代表调用方要求严格的日边界；当天没有行时必须返回 0，不能悄悄回退到昨天。
+  // 不传日期的上传解析仍保留“取 payload 最新日期”的行为。
+  const date = preferredDate || dates[dates.length - 1] || "";
   const dayRows = rows.filter((row) => row.date === date);
   const byTool = {};
   const normalizedByTool = {};
@@ -697,6 +702,7 @@ function quotaFeedUnavailable(key, label, reason = "waiting", items = []) {
   return {
     key,
     label,
+    reason,
     status: reason === "waiting" ? "waiting" : "error",
     valueLabel: state.valueLabel,
     detail: state.detail,
@@ -706,10 +712,13 @@ function quotaFeedUnavailable(key, label, reason = "waiting", items = []) {
 }
 
 function zaiQuotaUnavailable(reason = "waiting") {
-  return quotaFeedUnavailable("glm", "GLM / Z.ai", reason, [
+  return {
+    ...quotaFeedUnavailable("glm", "GLM / Z.ai", reason, [
     quotaItemUnavailable("glm-5h", "5小时额度", reason),
     quotaItemUnavailable("glm-mcp", "MCP额度", reason),
-  ]);
+    ]),
+    usageTrend: emptyZaiUsageTrend(reason),
+  };
 }
 
 function quotaValueLabel(used, total) {
@@ -863,33 +872,100 @@ function aggregateUsageByDay(history = []) {
     .map(([date, used]) => ({ date, used }));
 }
 
-function zaiUsagePeriod(key, label, resp, limit, groupByDay = false, historyOverride = null) {
-  const rawHistory = Array.isArray(historyOverride) ? historyOverride : zaiUsageHistory(resp);
-  const history = groupByDay ? aggregateUsageByDay(rawHistory) : rawHistory;
-  const total = Number(resp?.json?.data?.totalUsage?.totalTokensUsage || 0)
-    || history.reduce((sum, item) => sum + Number(item.used || 0), 0);
-  const bars = compactUsageBars(history, limit);
-  const summary = usageBarSummary(bars);
+function zaiUsageResponseState(resp) {
+  if (!resp) return "waiting";
+  if (!resp.ok || resp.json?.code !== 200) return "error";
+  const data = resp.json?.data;
+  if (!data || !Array.isArray(data.x_time) || !Array.isArray(data.tokensUsage)) return "error";
+  return data.x_time.length === data.tokensUsage.length ? "ok" : "error";
+}
+
+function usagePeriodFromHistory(key, label, history = [], limit = 12, status = "ok") {
+  const normalized = Array.isArray(history) ? history : [];
+  const total = normalized.reduce((sum, item) => sum + Number(item.used || 0), 0);
+  const bars = compactUsageBars(normalized, limit);
   return {
     key,
     label,
-    status: resp?.ok ? "ok" : "waiting",
+    status,
     total,
-    totalLabel: total > 0 ? formatCount(total) : "--",
+    totalLabel: status === "ok" || status === "stale" ? formatCount(total) : "--",
     bars,
-    ...summary,
+    ...usageBarSummary(bars),
   };
 }
 
-function buildZaiUsageTrend(resp1d, resp7d, resp30d) {
-  const history24h = zaiUsagePeriod("24h", "24h", resp1d, 24, false, recentHourlyUsageHistory(resp1d, 24));
+function zaiUsagePeriod(key, label, resp, limit, groupByDay = false, historyOverride = null) {
+  const status = zaiUsageResponseState(resp);
+  if (status !== "ok") return usagePeriodFromHistory(key, label, [], limit, status);
+
+  const overridden = Array.isArray(historyOverride);
+  const rawHistory = overridden ? historyOverride : zaiUsageHistory(resp);
+  const history = groupByDay ? aggregateUsageByDay(rawHistory) : rawHistory;
+  const period = usagePeriodFromHistory(key, label, history, limit, "ok");
+  const responseTotal = resp?.json?.data?.totalUsage?.totalTokensUsage;
+  if (!overridden && responseTotal !== undefined && Number.isFinite(Number(responseTotal))) {
+    period.total = Number(responseTotal);
+    period.totalLabel = formatCount(period.total);
+  }
+  return period;
+}
+
+function recentDailyUsageHistory(resp, days = 7) {
+  const grouped = new Map(aggregateUsageByDay(zaiUsageHistory(resp, true))
+    .map((item) => [item.date, Number(item.used || 0)]));
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const history = [];
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - offset);
+    const key = localDateString(date);
+    history.push({ date: key, used: grouped.get(key) || 0 });
+  }
+  return history;
+}
+
+function trendStatus(periods = []) {
+  const statuses = periods.map((period) => period?.status || "waiting");
+  if (statuses.length && statuses.every((status) => status === "ok")) return "ok";
+  if (statuses.length && statuses.every((status) => status === "stale")) return "stale";
+  if (statuses.some((status) => status === "ok" || status === "stale")) return "partial";
+  if (statuses.length && statuses.every((status) => status === "waiting")) return "waiting";
+  return "error";
+}
+
+function buildZaiUsageTrend(resp1d, resp30d) {
+  const history24h = zaiUsagePeriod("24h", "24小时", resp1d, 24, false, recentHourlyUsageHistory(resp1d, 24));
   const history1d = zaiUsagePeriod("1d", "日", resp1d, 12);
-  const history7d = zaiUsagePeriod("7d", "7天", resp7d, 7, true);
+  const history7d = zaiUsagePeriod("7d", "7天", resp30d, 7, false, recentDailyUsageHistory(resp30d, 7));
   const history30d = zaiUsagePeriod("30d", "30天", resp30d, 15, true);
+  const periods = [history24h, history7d, history30d];
   return {
     key: "glm",
     label: "GLM 消耗趋势",
-    source: "Coding Quota Bar",
+    source: "Z.ai 用量接口",
+    status: trendStatus(periods),
+    history24h,
+    history1d,
+    history7d,
+    history30d,
+    periods,
+  };
+}
+
+function emptyZaiUsageTrend(reason = "waiting") {
+  const status = reason === "waiting" ? "waiting" : "error";
+  const history24h = usagePeriodFromHistory("24h", "24小时", [], 24, status);
+  const history1d = usagePeriodFromHistory("1d", "日", [], 12, status);
+  const history7d = usagePeriodFromHistory("7d", "7天", [], 7, status);
+  const history30d = usagePeriodFromHistory("30d", "30天", [], 15, status);
+  return {
+    key: "glm",
+    label: "GLM 消耗趋势",
+    source: "Z.ai 用量接口",
+    status,
+    reason,
     history24h,
     history1d,
     history7d,
@@ -936,6 +1012,12 @@ function enabledZaiAccounts() {
   return accounts;
 }
 
+function zaiAccountFingerprint(accounts = []) {
+  if (!accounts.length) return "not-connected";
+  const material = accounts.map((account) => String(account.apiKey || "").trim()).join("\u0000");
+  return crypto.createHash("sha256").update(material).digest("hex").slice(0, 16);
+}
+
 async function fetchZaiQuotaForAccount(account) {
   const headers = {
     authorization: `Bearer ${String(account.apiKey).trim()}`,
@@ -958,27 +1040,27 @@ async function fetchZaiQuotaForAccount(account) {
 
   const now = new Date();
   const oneDayAgo = new Date(now.getTime() - 86400000);
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
-  const [usageResp, usage7dResp, usage30dResp] = await Promise.all([
+  const [usageResp, usage30dResp] = await Promise.all([
     requestTextWithRetry("GET", zaiUsageUrl(oneDayAgo, now), "", headers, 30000, 2),
-    requestTextWithRetry("GET", zaiUsageUrl(sevenDaysAgo, now), "", headers, 30000, 2),
     requestTextWithRetry("GET", zaiUsageUrl(thirtyDaysAgo, now), "", headers, 30000, 2),
   ]);
 
   const items = zaiQuotaItems(quotaResp.json.data.limits, usageResp);
   const primary = items.find((item) => item.key === "glm-5h") || items[0];
   const levelLabel = quotaResp.json.data.level ? String(quotaResp.json.data.level).toUpperCase() : "";
-  const usageTrend = buildZaiUsageTrend(usageResp, usage7dResp, usage30dResp);
+  const usageTrend = buildZaiUsageTrend(usageResp, usage30dResp);
+  const feedStatus = usageTrend.status === "ok" ? "ok" : "partial";
+  const trendDetail = feedStatus === "ok" ? "" : " · 部分趋势读取失败，保留可用数据";
 
   return {
     key: "glm",
     label: account.label ? `GLM / Z.ai · ${account.label}` : "GLM / Z.ai",
-    status: "ok",
+    status: feedStatus,
     value: primary?.value || 0,
     total: primary?.total || 0,
     valueLabel: primary?.valueLabel || "--",
-    detail: primary?.detail || "额度已读取",
+    detail: `${primary?.detail || "额度已读取"}${trendDetail}`,
     levelLabel,
     pct: Math.max(4, ...items.map((item) => Number(item.pct || 0))),
     items,
@@ -986,8 +1068,7 @@ async function fetchZaiQuotaForAccount(account) {
   };
 }
 
-async function fetchZaiQuota() {
-  const accounts = enabledZaiAccounts();
+async function fetchZaiQuota(accounts = enabledZaiAccounts()) {
   if (!accounts.length) {
     return zaiQuotaUnavailable("not-connected");
   }
@@ -1005,20 +1086,89 @@ function quotaCacheTtl(feed) {
   return feed?.status === "ok" ? QUOTA_CACHE_TTL_MS : QUOTA_ERROR_CACHE_TTL_MS;
 }
 
+function staleUsagePeriod(period) {
+  return period ? { ...period, status: "stale" } : null;
+}
+
+function retainLastGoodZaiQuota(fresh, lastGood, staleAt = new Date().toISOString()) {
+  if (!lastGood || fresh?.status === "ok") return fresh;
+  if (["auth", "not-connected"].includes(fresh?.reason)) return fresh;
+
+  const freshTrend = fresh?.usageTrend;
+  const oldTrend = lastGood?.usageTrend;
+  if (!oldTrend) return fresh;
+  const currentByKey = new Map((freshTrend?.periods || []).map((period) => [period.key, period]));
+  const oldByKey = new Map((oldTrend.periods || []).map((period) => [period.key, period]));
+  const periods = ["24h", "7d", "30d"].map((key) => {
+    const current = currentByKey.get(key);
+    if (current?.status === "ok") return current;
+    return staleUsagePeriod(oldByKey.get(key)) || current;
+  }).filter(Boolean);
+  const periodByKey = new Map(periods.map((period) => [period.key, period]));
+  const legacyDay = freshTrend?.history1d?.status === "ok"
+    ? freshTrend.history1d
+    : staleUsagePeriod(oldTrend.history1d);
+  const usageTrend = {
+    ...oldTrend,
+    ...(freshTrend || {}),
+    status: periods.every((period) => period.status === "stale") ? "stale" : "partial",
+    history24h: periodByKey.get("24h") || oldTrend.history24h,
+    history1d: legacyDay || oldTrend.history1d,
+    history7d: periodByKey.get("7d") || oldTrend.history7d,
+    history30d: periodByKey.get("30d") || oldTrend.history30d,
+    periods,
+  };
+  return {
+    ...lastGood,
+    ...fresh,
+    status: "stale",
+    staleAt,
+    detail: `${fresh?.detail || "Z.ai 接口暂不可用"} · 正在显示最近成功数据`,
+    usageTrend,
+  };
+}
+
+async function refreshZaiQuota(accounts, fingerprint) {
+  const activeRefresh = quotaRefreshPromises.get(fingerprint);
+  if (activeRefresh) return activeRefresh;
+  const refresh = (async () => {
+    let fresh;
+    try {
+      fresh = await fetchZaiQuota(accounts);
+    } catch {
+      fresh = zaiQuotaUnavailable("read");
+    }
+    if (fresh?.status === "ok") {
+      zaiLastGoodByAccount.set(fingerprint, { ...fresh, capturedAt: new Date().toISOString() });
+    }
+    const retained = retainLastGoodZaiQuota(fresh, zaiLastGoodByAccount.get(fingerprint));
+    quotaCache = { at: Date.now(), fingerprint, zai: retained };
+    return retained;
+  })();
+  quotaRefreshPromises.set(fingerprint, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (quotaRefreshPromises.get(fingerprint) === refresh) quotaRefreshPromises.delete(fingerprint);
+  }
+}
+
 async function cachedZaiQuota() {
-  if (quotaCache.zai && Date.now() - quotaCache.at < quotaCacheTtl(quotaCache.zai)) {
+  const accounts = enabledZaiAccounts();
+  const fingerprint = zaiAccountFingerprint(accounts);
+  if (quotaCache.zai && quotaCache.fingerprint === fingerprint
+    && Date.now() - quotaCache.at < quotaCacheTtl(quotaCache.zai)) {
     return quotaCache.zai;
   }
-
-  try {
-    quotaCache = { at: Date.now(), zai: await fetchZaiQuota() };
-  } catch {
-    quotaCache = {
-      at: Date.now(),
-      zai: zaiQuotaUnavailable("read"),
-    };
+  const lastGood = zaiLastGoodByAccount.get(fingerprint);
+  void refreshZaiQuota(accounts, fingerprint);
+  if (lastGood) {
+    return retainLastGoodZaiQuota(
+      { key: "glm", status: "partial", detail: "正在刷新 Z.ai 数据", usageTrend: emptyZaiUsageTrend("read") },
+      lastGood,
+    );
   }
-  return quotaCache.zai;
+  return zaiQuotaUnavailable("waiting");
 }
 
 function codexQuotaItems(byTool = {}) {
@@ -1090,27 +1240,23 @@ async function quotaFeeds(byTool = {}, total = 0) {
 function usageTrends(feeds = []) {
   const glm = feeds.find((feed) => feed?.key === "glm");
   return {
-    glm: glm?.usageTrend || {
-      key: "glm",
-      label: "GLM 消耗趋势",
-      source: "Coding Quota Bar",
-      history1d: zaiUsagePeriod("1d", "日", null, 12),
-      history7d: zaiUsagePeriod("7d", "7天", null, 7),
-      history30d: zaiUsagePeriod("30d", "30天", null, 15),
-      periods: [],
-    },
+    glm: glm?.usageTrend || emptyZaiUsageTrend("waiting"),
   };
 }
 
 function buildQuotaAudit(byTool = {}, feeds = []) {
   const glm = feeds.find((feed) => feed?.key === "glm");
+  const glmStatus = glm?.status || "missing";
+  const glmDetail = {
+    ok: "已接入 Z.ai 5小时额度、MCP 额度和 24小时/7天/30天趋势",
+    partial: "Z.ai 部分趋势读取失败，已保留其余可用数据",
+    stale: "Z.ai 本轮读取失败，当前显示最近成功数据",
+  }[glmStatus] || "未读到可用 Z.ai 额度源";
   const rows = [{
     key: "glm",
     label: "GLM / Z.ai",
-    status: glm?.status === "ok" ? "ok" : "missing",
-    detail: glm?.status === "ok"
-      ? "已接入 Z.ai 5小时额度、MCP 额度和历史消耗"
-      : "未读到可用 Z.ai 额度源",
+    status: glmStatus,
+    detail: glmDetail,
   }];
 
   const usageOnly = [
@@ -1152,8 +1298,11 @@ function rankedTools(byTool = {}, total = 0) {
 
 function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal }) {
   const matched = Boolean(sync?.leaderboardMatched);
-  const rankValue = rank ? `#${rank}` : "#--";
   const scoreLabel = leaderboardTotal > 0 ? formatCount(leaderboardTotal) : "--";
+  const distanceLabel = rank === 1 ? "领先下一名" : "距上一名";
+  const distanceValue = matched
+    ? formatCount(rank === 1 ? Number(lead || 0) : Number(gap || 0))
+    : "--";
   const rankDetail = rank === 1
     ? (next?.name ? `领先 ${next.name}` : "榜单暂无下一名")
     : (previous?.name ? `距 ${previous.name}` : "等待榜单匹配");
@@ -1175,9 +1324,9 @@ function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTota
         status: matched ? "ok" : "waiting",
       },
       {
-        key: "leaderboard-rank",
-        label: "榜单排名",
-        valueLabel: rankValue,
+        key: "leaderboard-distance",
+        label: distanceLabel,
+        valueLabel: distanceValue,
         detail: matched ? rankDetail : "等待榜单匹配",
         status: matched ? "ok" : "waiting",
       },
@@ -1441,14 +1590,42 @@ async function openTokenPreviewSnapshot(preferredDate = "") {
 
 function refreshUsageInBackground(date = localDateString()) {
   if (usageRefresh.promise && usageRefresh.date === date) return usageRefresh.promise;
-  const refresh = Promise.allSettled([
-    openTokenPreviewSnapshot(date),
-    openTokenClaudeCodeUsage(date),
-  ]).finally(() => {
+  const refresh = openTokenPreviewSnapshot(date).finally(() => {
     if (usageRefresh.promise === refresh) usageRefresh = { date: "", promise: null };
   });
   usageRefresh = { date, promise: refresh };
   return refresh;
+}
+
+function refreshClaudeCodeInBackground(date = localDateString()) {
+  if (claudeCodeRefresh.promise && claudeCodeRefresh.date === date) return claudeCodeRefresh.promise;
+  const refresh = openTokenClaudeCodeUsage(date).finally(() => {
+    if (claudeCodeRefresh.promise === refresh) claudeCodeRefresh = { date: "", promise: null };
+  });
+  claudeCodeRefresh = { date, promise: refresh };
+  return refresh;
+}
+
+function claudeCodeCacheTtl(cache) {
+  return cache?.status === "ok" ? PREVIEW_CACHE_TTL_MS : QUOTA_ERROR_CACHE_TTL_MS;
+}
+
+function retainLastGoodClaudeUsage(fresh, lastGood, staleAt = new Date().toISOString()) {
+  if (!lastGood || fresh?.status === "ok") return fresh;
+  return {
+    ...lastGood,
+    at: fresh.at,
+    status: "stale",
+    staleAt,
+    error: fresh.error || "Claude Code 扫描暂不可用",
+    detail: "本轮扫描失败，正在显示今天最近一次成功数据",
+  };
+}
+
+function validUsagePayload(payload) {
+  return Array.isArray(payload)
+    || Array.isArray(payload?.rows)
+    || Array.isArray(payload?.records);
 }
 
 // 单工具扫描 claude-code 用量。`opentoken upload` 全量扫描在这台机器上常因 codex
@@ -1458,9 +1635,8 @@ function refreshUsageInBackground(date = localDateString()) {
 async function openTokenClaudeCodeUsage(preferredDate = "") {
   const date = preferredDate || localDateString();
   if (
-    claudeCodeCache.rows
-    && claudeCodeCache.date === date
-    && Date.now() - claudeCodeCache.at < PREVIEW_CACHE_TTL_MS
+    claudeCodeCache.date === date
+    && Date.now() - claudeCodeCache.at < claudeCodeCacheTtl(claudeCodeCache)
   ) {
     return claudeCodeCache;
   }
@@ -1468,14 +1644,45 @@ async function openTokenClaudeCodeUsage(preferredDate = "") {
   // claude-code 单工具日志小，不会触发 codex 全量扫描的超时问题。
   const result = await run(OPENTOKEN, ["preview", "--tool", "claude-code", "--json"], 10000);
   if (!result.ok) {
-    claudeCodeCache = { at: Date.now(), date, rows: [], summary: null, claudeValue: 0 };
+    const fresh = {
+      at: Date.now(),
+      date,
+      status: "error",
+      rows: [],
+      summary: null,
+      claudeValue: 0,
+      error: (result.stderr || result.stdout || result.message || "Claude Code preview failed").trim(),
+    };
+    claudeCodeCache = retainLastGoodClaudeUsage(fresh, claudeCodeLastGoodByDate.get(date));
     return claudeCodeCache;
   }
   const payload = safeJson(result.stdout);
+  if (!validUsagePayload(payload)) {
+    const fresh = {
+      at: Date.now(),
+      date,
+      status: "error",
+      rows: [],
+      summary: null,
+      claudeValue: 0,
+      error: "Claude Code preview returned malformed JSON",
+    };
+    claudeCodeCache = retainLastGoodClaudeUsage(fresh, claudeCodeLastGoodByDate.get(date));
+    return claudeCodeCache;
+  }
   const rows = rowsFromPayload(payload);
   const summary = summarizeRows(rows, date);
   const claudeValue = Number(summary.byTool["claude-code"] || 0);
-  claudeCodeCache = { at: Date.now(), date, rows, summary, claudeValue };
+  claudeCodeCache = {
+    at: Date.now(),
+    date,
+    status: "ok",
+    rows,
+    summary,
+    claudeValue,
+    detail: claudeValue > 0 ? `已读取 ${formatCount(claudeValue)}` : "今天暂无 Claude Code Token",
+  };
+  claudeCodeLastGoodByDate.set(date, claudeCodeCache);
   return claudeCodeCache;
 }
 
@@ -1483,14 +1690,19 @@ async function openTokenClaudeCodeUsage(preferredDate = "") {
 // 增量账本漏掉的模型）。返回 preview 的全量 claude-code 行，调用方丢弃 payload 里
 // 旧的 claude-code 行后再注入，避免 scys 端同 (date,model) 行被偏小旧值占位，
 // 导致排行榜分因口径缺失而排不进前 200。让真实 claude-code 消耗随 opentoken→scys 上传。
+function uploadableClaudeRows(cache, date) {
+  if (cache?.status !== "ok" || !date || !Array.isArray(cache.rows) || !cache.rows.length) return [];
+  return cache.rows.filter((row) =>
+    row && row.tool === "claude-code" && String(row.date || "") === String(date),
+  );
+}
+
 function augmentClaudeCodeRows(date) {
   // 本地 preview 扫到的 claude-code 行是权威值（含 claude-opus-5 等增量计费漏掉的模型）。
   // 返回 preview 的全量 claude-code 行，调用方丢弃 payload 里旧的 claude-code 行，
   // 避免 scys 端同 (date,model) 行被偏小的旧值占位，导致排行榜分排不进前 200。
-  if (!date || !Array.isArray(claudeCodeCache.rows) || !claudeCodeCache.rows.length) return [];
-  return claudeCodeCache.rows.filter((r) =>
-    r && r.tool === "claude-code" && String(r.date || "") === String(date),
-  );
+  // stale 最近成功值仅用于 GUI 保底；扫描失败时绝不能用旧行覆盖入站的更新 payload。
+  return uploadableClaudeRows(claudeCodeCache, date);
 }
 
 async function buildSummary() {
@@ -1503,6 +1715,9 @@ async function buildSummary() {
   const rawBoard = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
   // /summary 是 GUI 的热路径：绝不能等待全量 Codex 扫描。先返回已知缓存，扫描在
   // 后台并行进行；下一次轮询会拿到新快照，面板不会因单次扫描卡死十几秒。
+  // 榜单已匹配时可以跳过昂贵的全工具扫描，但 Claude Code 单工具扫描仍必须执行；
+  // 否则服务一重启，内存缓存为空且 rawBoard.own 存在，Claude Code 会永久从 GUI 消失。
+  refreshClaudeCodeInBackground(today);
   if (!rawBoard?.own) refreshUsageInBackground(today);
   const previewSnapshot = previewCache.date === today ? previewCache.snapshot : null;
   const usageSummary = previewSnapshot?.summary?.rowCount
@@ -1617,6 +1832,11 @@ async function buildSummary() {
     runtime: {
       opentokenBin: OPENTOKEN,
       refreshingUsage: Boolean(usageRefresh.promise && usageRefresh.date === today),
+      refreshingClaudeCode: Boolean(claudeCodeRefresh.promise && claudeCodeRefresh.date === today),
+      claudeCodeStatus: claudeByTool?.status || "waiting",
+      claudeCodeValue: Number(claudeByTool?.claudeValue || 0),
+      claudeCodeUpdatedAt: claudeByTool?.at ? new Date(claudeByTool.at).toISOString() : "",
+      claudeCodeDetail: claudeByTool?.detail || "正在读取今天的 Claude Code Token",
     },
     upstream: {
       accepted: state.lastUpload?.upstream?.json?.accepted ?? null,
@@ -1876,6 +2096,13 @@ if (require.main === module) {
 // 供单元测试直接驱动 buildSummary（require 时不 listen，避免端口冲突）
 module.exports = {
   buildSummary,
+  buildZaiUsageTrend,
+  emptyZaiUsageTrend,
+  retainLastGoodZaiQuota,
+  retainLastGoodClaudeUsage,
+  summarizeRows,
+  uploadableClaudeRows,
+  usageTrends,
   localDateString,
   setState(next) { state = next; },
   getState() { return state; },

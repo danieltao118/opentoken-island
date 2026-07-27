@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node tests/windows_support_contract.test.cjs && node tests/build_summary.test.cjs",
+    "test": "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/build_summary.test.cjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
