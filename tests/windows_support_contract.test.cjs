@@ -162,7 +162,7 @@ assert.match(popoverHtml, /function openLeaderboard/, "Leaderboard button should
 assert.match(popoverHtml, /\/open-leaderboard/, "Leaderboard button should call the local default-browser opener");
 assert.match(popoverHtml, /actualTotalLabel/, "Popover hero should emphasize the actual fresh input and output total");
 assert.match(popoverHtml, /\.rank\{display:grid/, "Popover should visibly render the real leaderboard rank");
-assert.match(popoverHtml, /实际 Token（原始）/, "Hero should distinguish raw actual usage from the normalized leaderboard score");
+assert.match(popoverHtml, /实际 Token（本机）/, "Hero should distinguish known actual usage scope from the normalized leaderboard score");
 assert.match(popoverHtml, /id="serviceText"[^>]*role="status"[^>]*aria-live="polite"/, "Service updates should be announced accessibly");
 assert.ok(
   popoverHtml.indexOf('id="toolList"') < popoverHtml.indexOf('id="rankFacts"')
@@ -313,18 +313,23 @@ assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCou
 assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");
 assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/, "Leaderboard total should only come from the matched SCYS leaderboard row");
 assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
-  assert.match(serverJs, /let displayByTool = Object\.keys\(byTool\)\.length \? byTool : leaderboardByTool/, "Visible tool rows should prefer raw local usage over leaderboard score breakdowns");
+  assert.match(serverJs, /function mergeKnownToolUsage/, "Visible tool rows should merge local and multi-device leaderboard agents by tool");
+  assert.match(serverJs, /const value = Math\.max\(localValue, leaderboardValue\)/, "The same agent must use the best known cumulative value instead of being double-counted");
+  assert.match(serverJs, /const mergedUsage = mergeKnownToolUsage\(localDisplayByTool, leaderboardDisplayByTool\)/, "Leaderboard-only Hermes and OpenClaw values should remain visible beside local agents");
+  assert.match(serverJs, /usageScopeLabel:/, "Summary should label whether actual Token is local or multi-device");
+  assert.match(popoverHtml, /id="totalCaption"/, "Popover should identify the scope of the visible Token total");
   assert.match(serverJs, /openTokenClaudeCodeUsage[\s\S]*"preview",\s*"--tool",\s*"claude-code"/, "Claude Code usage should be backfilled via a single-tool preview scan that avoids the full-scan timeout");
   assert.match(serverJs, /refreshClaudeCodeInBackground\(today\);[\s\S]*if \(!rawBoard\?\.own\) refreshUsageInBackground\(today\)/, "Claude Code refresh must still run after a leaderboard match while the expensive full scan stays conditional");
   assert.match(serverJs, /claudeCodeRefresh\.promise[\s\S]*return claudeCodeRefresh\.promise/, "Concurrent panel polls should share one Claude Code scan");
   assert.match(serverJs, /function retainLastGoodClaudeUsage/, "Transient Claude Code scan failures should retain the latest successful daily value");
   assert.match(serverJs, /function uploadableClaudeRows[\s\S]*status !== "ok"[\s\S]*return \[\]/, "Stale Claude GUI rows must never replace a newer upload payload");
   assert.match(serverJs, /claudeCodeStatus:/, "Summary diagnostics should expose whether Claude Code data is fresh, stale, or still loading");
-  assert.match(serverJs, /const claudeByTool = claudeCodeCache\.date === today \? claudeCodeCache : null;[\s\S]*claudeByTool\.claudeValue > 0[\s\S]*displayByTool = \{ \.\.\.displayByTool, "claude-code": claudeByTool\.claudeValue \}/, "Claude Code usage should use the completed local cache without blocking the GUI");
+  assert.match(serverJs, /const claudeByTool = claudeCodeCache\.date === today \? claudeCodeCache : null;[\s\S]*localDisplayByTool\["claude-code"\] = Math\.max/, "Claude Code usage should join the same non-decreasing multi-device merge without blocking the GUI");
   assert.match(serverJs, /function augmentClaudeCodeRows/, "Upload proxy must expose a helper that augments missing claude-code rows before forwarding to SCYS");
   assert.match(serverJs, /let forwardBody = body[\s\S]*openTokenClaudeCodeUsage\(summary\.date\)[\s\S]*augmentClaudeCodeRows\(summary\.date\)[\s\S]*forwardBody = JSON\.stringify\(augmentedPayload\)/, "Upload proxy must backfill real claude-code rows for the payload date only");
   assert.match(serverJs, /String\(r\.date \|\| ""\) === String\(summary\.date\)/, "Upload proxy must replace only same-day Claude rows and preserve other dated records");
-assert.match(serverJs, /const actualTotal = Number\(actualUsage\.total \|\| uploadRawTotal \|\| 0\)/, "The main visible total must be raw local usage, not a leaderboard score");
+assert.match(serverJs, /const actualTotal = Number\(actualUsage\.total \|\| 0\)/, "The main visible total must equal the sum of deduplicated visible tool rows");
+assert.match(serverJs, /function retainLeaderboardSnapshot/, "A transient leaderboard miss should retain the latest same-day multi-device tool snapshot");
 assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose raw actual usage for the main UI");
 assert.match(serverJs, /totalLabel: usageSummary \|\| uploadSummary \|\| claudeByTool\?\.claudeValue \|\| hasLeaderboardScore/, "A completed Claude-only cache should render while the full preview is refreshing");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");

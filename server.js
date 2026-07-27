@@ -469,6 +469,46 @@ function normalizeToolMap(byTool = {}) {
   return normalized;
 }
 
+function mergeKnownToolUsage(localInput = {}, leaderboardInput = {}) {
+  const local = normalizeToolMap(localInput);
+  const leaderboard = normalizeToolMap(leaderboardInput);
+  const names = new Set([...Object.keys(local), ...Object.keys(leaderboard)]);
+  const byTool = {};
+  const sourceByTool = {};
+  for (const name of names) {
+    const localValue = Math.max(0, Number(local[name] || 0));
+    const leaderboardValue = Math.max(0, Number(leaderboard[name] || 0));
+    const value = Math.max(localValue, leaderboardValue);
+    if (value <= 0) continue;
+    byTool[name] = value;
+    sourceByTool[name] = leaderboardValue > localValue
+      ? "leaderboard"
+      : localValue > leaderboardValue
+        ? "local"
+        : "matched";
+  }
+  return { byTool, sourceByTool };
+}
+
+function annotateUsageToolSources(tools = [], sourceByTool = {}) {
+  const sourceLabels = {
+    leaderboard: "榜单多端汇总",
+    local: "本机原始",
+    matched: "本机与榜单一致",
+  };
+  return tools.map((tool) => {
+    const source = sourceByTool[tool.name] || "local";
+    const sourceLabel = sourceLabels[source] || sourceLabels.local;
+    const localDetail = source === "leaderboard" ? "" : String(tool.detail || "");
+    return {
+      ...tool,
+      source,
+      sourceLabel,
+      detail: [sourceLabel, localDetail].filter(Boolean).join(" · "),
+    };
+  });
+}
+
 function summarizeRows(rows, preferredDate = "") {
   const dates = [...new Set(rows.map((row) => row.date).filter(Boolean))].sort();
   // 传入日期代表调用方要求严格的日边界；当天没有行时必须返回 0，不能悄悄回退到昨天。
@@ -1390,6 +1430,17 @@ function shouldRefreshLeaderboardForUpload(uploadSummary, board, today) {
   return leaderboardBehindUsage(board, uploadSummary) || leaderboardOlderThanLastUpload(board);
 }
 
+function retainLeaderboardSnapshot(fresh, previous, today = localDateString()) {
+  if (fresh?.own || !previous?.own || !isSameLocalDate(previous.updatedAt, today)) return fresh;
+  return {
+    ...previous,
+    updatedAt: fresh?.updatedAt || new Date().toISOString(),
+    entriesCount: Number(fresh?.entriesCount || previous.entriesCount || 0),
+    stale: true,
+    error: fresh?.error || "排行榜刷新暂未返回当前账号，保留最近成功的多端明细",
+  };
+}
+
 async function refreshLeaderboard(summary, previousRank = null, options = {}) {
   const baseEndpoint = "https://scys.com/tokenrank/api/subapp/leaderboard?board=total&range=today&limit=500";
   const outerAttempts = Number(options.outerAttempts || 4);
@@ -1439,7 +1490,7 @@ async function refreshLeaderboard(summary, previousRank = null, options = {}) {
     if (attempt < outerAttempts - 1) await sleep(900);
   }
 
-  state.leaderboard = {
+  const failedSnapshot = {
     updatedAt: new Date().toISOString(),
     board: "total",
     range: "today",
@@ -1447,6 +1498,7 @@ async function refreshLeaderboard(summary, previousRank = null, options = {}) {
     leaderboardMatched: false,
     error: lastResult?.error || "Current upload was not found in leaderboard yet",
   };
+  state.leaderboard = retainLeaderboardSnapshot(failedSnapshot, state.leaderboard);
   saveState();
   return state.leaderboard;
 }
@@ -1751,34 +1803,47 @@ async function buildSummary() {
   const leaderboardByTool = normalizeToolMap(own?.byTool || {});
   const leaderboardTotal = Number(own?.score || 0);
   const hasLeaderboardScore = Boolean(own && leaderboardTotal > 0);
+  const uploadRawTotal = Number(usageSummary?.total || uploadSummary?.total || 0);
   // 主数始终跟随已匹配的公开榜单分（与 scys 网页同口径）；
   // 不再用 boardIsBehind 闸门——raw 与榜单分口径不同源会让比较恒真、主数钉死在 raw。
   const useLeaderboardForMain = hasLeaderboardScore;
-  // 工具明细与“实际消耗”统一使用原始本地 Token；只有本地没有任何行时才回退
-  // 榜单的工具构成。榜单分仍独立用于排名，不再覆盖本地明细。
-  let displayByTool = Object.keys(byTool).length ? byTool : leaderboardByTool;
+  // 本机与榜单按工具逐项合并：同一工具取较大值（避免多端重复相加，也避免榜单延迟
+  // 把本机新值压低），榜单独有工具则补入 GUI，供多台电脑共用同一账号时查看。
+  const localDisplayByTool = { ...byTool };
+  const leaderboardDisplayByTool = { ...leaderboardByTool };
+  if (!Object.keys(localDisplayByTool).length && !Object.keys(leaderboardDisplayByTool).length) {
+    if (uploadRawTotal > 0) localDisplayByTool.unknown = uploadRawTotal;
+    else if (leaderboardTotal > 0) leaderboardDisplayByTool.unknown = leaderboardTotal;
+  }
   // opentoken upload 在本机常因 codex 海量日志全量扫描超时，导致上传 payload 与公开榜单
   // own.byTool 里的 claude-code 不可靠（缺失或偏小）。这里始终用秒级单工具全量 preview
-  // 的 claude-code 值覆盖工具构成（仅展示，不计入主数）。主数/榜单分/排名仍钉死在
-  // leaderboard 口径，与既有「等待榜单刷新」逻辑一致。
+  // 的 claude-code 值参与同一逐工具 max 合并，不能用较小的本机扫描覆盖多端榜单值。
   const claudeByTool = claudeCodeCache.date === today ? claudeCodeCache : null;
   if (claudeByTool && claudeByTool.claudeValue > 0) {
-    displayByTool = { ...displayByTool, "claude-code": claudeByTool.claudeValue };
+    localDisplayByTool["claude-code"] = Math.max(
+      Number(localDisplayByTool["claude-code"] || 0),
+      Number(claudeByTool.claudeValue || 0),
+    );
   }
-  const uploadRawTotal = Number(usageSummary?.total || uploadSummary?.total || 0);
+  const mergedUsage = mergeKnownToolUsage(localDisplayByTool, leaderboardDisplayByTool);
+  const displayByTool = mergedUsage.byTool;
+  const displayNormalizedByTool = Object.fromEntries(
+    Object.entries(normalizedByTool).filter(([name]) => mergedUsage.sourceByTool[name] !== "leaderboard"),
+  );
   const rank = own ? Number(own.rank) : null;
   const gap = Number(board?.gapToPrevious || 0);
   const lead = Number(board?.leadOverNext || 0);
   const quotas = await quotaFeeds(displayByTool, useLeaderboardForMain ? leaderboardTotal : uploadRawTotal || leaderboardTotal);
   const trends = usageTrends(quotas);
-  const actualUsage = actualUsageSummary(displayByTool, normalizedByTool);
-  // “实际消耗”必须是原始 Token（与各工具行可加总），排行榜另有自己的归一化计分。
-  // 两者都返回给 UI，避免把榜单分误标为实际消耗。
-  const actualTotal = Number(actualUsage.total || uploadRawTotal || 0);
-  const total = actualTotal || leaderboardTotal;
-  const tools = actualUsage.tools.length
+  const actualUsage = actualUsageSummary(displayByTool, displayNormalizedByTool);
+  // “实际消耗”是逐工具去重后的已知多端 Token，工具行之和与主数保持一致；排行榜
+  // 总分仍单独返回用于排名，不再拿一个来源整体覆盖另一个来源。
+  const actualTotal = Number(actualUsage.total || 0);
+  const total = actualTotal;
+  const rawTools = actualUsage.tools.length
     ? actualUsage.tools
-    : toolsFromUsageMaps(displayByTool, normalizedByTool);
+    : toolsFromUsageMaps(displayByTool, displayNormalizedByTool);
+  const tools = annotateUsageToolSources(rawTools, mergedUsage.sourceByTool);
   const quotaAudit = buildQuotaAudit(displayByTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
   const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal });
@@ -1802,6 +1867,10 @@ async function buildSummary() {
     totalLabel: usageSummary || uploadSummary || claudeByTool?.claudeValue || hasLeaderboardScore ? formatCount(total) : "--",
     actualTotal,
     actualTotalLabel: usageSummary || uploadSummary || claudeByTool?.claudeValue || hasLeaderboardScore ? formatCount(actualTotal || total) : "--",
+    usageScope: hasLeaderboardScore || Object.keys(leaderboardByTool).length ? "multi-device" : "local",
+    usageScopeLabel: hasLeaderboardScore || Object.keys(leaderboardByTool).length ? "实际 Token（多端汇总）" : "实际 Token（本机）",
+    localByTool: localDisplayByTool,
+    toolSourceByTool: mergedUsage.sourceByTool,
     leaderboardTotal,
     leaderboardTotalLabel: hasLeaderboardScore ? formatCount(leaderboardTotal) : "--",
     leaderboardByTool,
@@ -2098,6 +2167,8 @@ module.exports = {
   buildSummary,
   buildZaiUsageTrend,
   emptyZaiUsageTrend,
+  mergeKnownToolUsage,
+  retainLeaderboardSnapshot,
   retainLastGoodZaiQuota,
   retainLastGoodClaudeUsage,
   summarizeRows,

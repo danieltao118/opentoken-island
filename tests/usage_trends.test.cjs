@@ -4,6 +4,8 @@ const path = require("path");
 const {
   buildZaiUsageTrend,
   emptyZaiUsageTrend,
+  mergeKnownToolUsage,
+  retainLeaderboardSnapshot,
   retainLastGoodClaudeUsage,
   retainLastGoodZaiQuota,
   summarizeRows,
@@ -171,6 +173,45 @@ assert.deepEqual(
   uploadableClaudeRows({ status: "ok", rows: uploadRows }, localDay(0)),
   uploadRows,
   "only a successful current scan may supply authoritative upload rows",
+);
+
+const multiDevice = mergeKnownToolUsage(
+  { codex: 1000, "claude-code": 500 },
+  { codex: 900, "claude-code": 800, hermes: 300, openclaw: 200 },
+);
+assert.deepEqual(multiDevice.byTool, {
+  codex: 1000,
+  "claude-code": 800,
+  hermes: 300,
+  openclaw: 200,
+});
+assert.equal(multiDevice.sourceByTool.codex, "local", "a lagging leaderboard must not lower local usage");
+assert.equal(multiDevice.sourceByTool["claude-code"], "leaderboard", "the larger multi-device value should win without addition");
+assert.equal(multiDevice.sourceByTool.hermes, "leaderboard", "leaderboard-only agents must remain visible locally");
+assert.equal(
+  Object.values(multiDevice.byTool).reduce((sum, value) => sum + value, 0),
+  2300,
+  "same-tool values must use max rather than being double-counted",
+);
+
+const priorBoard = {
+  updatedAt: new Date().toISOString(),
+  leaderboardMatched: true,
+  entriesCount: 500,
+  own: { userId: "same-account", byTool: { hermes: 300, openclaw: 200 } },
+};
+const retainedBoard = retainLeaderboardSnapshot({
+  updatedAt: new Date().toISOString(),
+  leaderboardMatched: false,
+  entriesCount: 100,
+  error: "not returned",
+}, priorBoard, localDay(0));
+assert.equal(retainedBoard.stale, true);
+assert.deepEqual(retainedBoard.own.byTool, priorBoard.own.byTool, "a transient leaderboard miss must not erase remote agents");
+assert.equal(
+  retainLeaderboardSnapshot({ leaderboardMatched: false }, { ...priorBoard, updatedAt: `${localDay(-1)}T12:00:00` }, localDay(0)).own,
+  undefined,
+  "previous-day leaderboard tools must not leak into today",
 );
 
 console.log("usage trend behavior ok");

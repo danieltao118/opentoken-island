@@ -21,7 +21,11 @@ const { buildSummary, setState, localDateString } = require(path.resolve(__dirna
       updatedAt: nowIso,
       leaderboardMatched: true,
       entriesCount: 100,
-      own: { score: 560854063, rank: 17, byTool: { codex: 500000000, "claude-code": 60854063 } },
+      own: {
+        score: 568854063,
+        rank: 17,
+        byTool: { codex: 500000000, "claude-code": 60854063, hermes: 3000000, openclaw: 5000000 },
+      },
     },
     lastUpload: {
       capturedAt: nowIso,
@@ -46,9 +50,17 @@ const { buildSummary, setState, localDateString } = require(path.resolve(__dirna
 
   // 核心断言：实际消耗与榜单分分开，工具项可加总为实际消耗。
   assert.equal(summary.source, "leaderboard", `source 应为 leaderboard，实际=${summary.source}`);
-  assert.equal(summary.actualTotal, 1571758301, `actualTotal 应为原始消耗 15.72亿，实际=${summary.actualTotal}`);
-  assert.equal(summary.leaderboardTotal, 560854063, "leaderboardTotal 应保留榜单分");
+  assert.equal(summary.actualTotal, 1579758301, `actualTotal 应为本机原始值加榜单独有工具且不重复，实际=${summary.actualTotal}`);
+  assert.equal(summary.leaderboardTotal, 568854063, "leaderboardTotal 应保留榜单分");
   assert.notEqual(summary.actualTotal, summary.leaderboardTotal, "实际消耗不得被榜单分覆盖");
+  assert.equal(summary.usageScope, "multi-device", "榜单匹配后应标记为多端已知汇总");
+  assert.equal(summary.tools.find((tool) => tool.name === "hermes")?.value, 3000000, "本机 GUI 应显示其他电脑的 Hermes");
+  assert.equal(summary.tools.find((tool) => tool.name === "openclaw")?.value, 5000000, "本机 GUI 应显示其他电脑的 OpenClaw");
+  assert.equal(
+    summary.tools.reduce((sum, tool) => sum + Number(tool.value || 0), 0),
+    summary.actualTotal,
+    "工具行之和必须等于多端实际总量",
+  );
 
   console.log(`build summary ok: raw=${summary.actualTotal}，leaderboard=${summary.leaderboardTotal}`);
 })().catch((err) => {
