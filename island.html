@@ -56,19 +56,41 @@
     const metricEl = document.getElementById('metric');
     const metaEl = document.getElementById('meta');
     const trackFillEl = document.getElementById('trackFill');
-    fetch('/api/summary').then((response) => response.json()).then((data) => {
-      if (!data.ok) return;
-      titleEl.textContent = `今日 ${data.totalLabel || '--'} token`;
-      if (data.rank === 1) {
-        copyEl.textContent = `守住第 1，领先 ${data.nextName || '第 2 名'} ${data.leadOverNextLabel || '0'}。`;
-      } else {
-        copyEl.textContent = `当前 ${data.rankLabel || '#--'}，距 ${data.previousName || '上一名'} ${data.gapToPreviousLabel || '0'}。`;
-      }
-      metricEl.textContent = data.rankLabel || '#--';
-      const tools = Array.isArray(data.tools) ? data.tools : [];
-      metaEl.textContent = tools[0] ? tools[0].label : 'live';
-      trackFillEl.style.width = Math.max(4, Math.min(100, Number(data.rankProgressPct || 0))) + '%';
-    }).catch(() => {});
+    let refreshSequence = 0;
+    async function refreshOpenTokenIsland() {
+      const sequence = ++refreshSequence;
+      try {
+        const response = await fetch('/api/summary', { cache: 'no-store' });
+        const data = await response.json();
+        if (sequence !== refreshSequence || !data.ok) return;
+        const overall = data.overallUsage || {};
+        const leaderboard = data.leaderboard || {};
+        titleEl.textContent = `本机今日 ${overall.totalLabel || data.totalLabel || '--'} token`;
+        if (leaderboard.rank === 1) {
+          copyEl.textContent = `总榜第 1，领先 ${leaderboard.next?.name || data.nextName || '第 2 名'} ${data.leadOverNextLabel || '0'}。`;
+        } else if (leaderboard.rank) {
+          const city = leaderboard.city && leaderboard.city.name
+            ? ` · ${leaderboard.city.name}${leaderboard.city.rankLabel || '#--'}`
+            : '';
+          copyEl.textContent = `总榜 ${leaderboard.rankLabel || data.rankLabel || '#--'}，距上一名 ${data.gapToPreviousLabel || '0'}${city}。`;
+        } else {
+          copyEl.textContent = (data.sync && data.sync.detail) || '本机统计正常，等待 SCYS 返回当前账号排名。';
+        }
+        metricEl.textContent = leaderboard.rankLabel || data.rankLabel || '#--';
+        const boardTools = Array.isArray(leaderboard.tools) ? leaderboard.tools : [];
+        const localTools = Array.isArray(overall.tools) ? overall.tools : (Array.isArray(data.tools) ? data.tools : []);
+        const leading = boardTools[0] || localTools[0];
+        metaEl.textContent = leading ? leading.label : 'live';
+        trackFillEl.style.width = Math.max(4, Math.min(100, Number(data.rankProgressPct || 0))) + '%';
+      } catch {}
+    }
+    window.refreshOpenTokenIsland = refreshOpenTokenIsland;
+    refreshOpenTokenIsland();
+    setInterval(refreshOpenTokenIsland, 10000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshOpenTokenIsland();
+    });
+    window.addEventListener('focus', refreshOpenTokenIsland);
   </script>
 </body>
 </html>

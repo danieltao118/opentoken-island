@@ -17,12 +17,21 @@ const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 const CODING_QUOTA_CONFIG_PATH = path.join(APPDATA, "coding-quota-bar", "config.json");
 const TOKENRANK_URL = "https://scys.com/tokenrank/";
 const ZAI_CODING_API_BASE = "https://api.z.ai";
+const APP_ID = "opentoken-island";
+const API_PROTOCOL_VERSION = 3;
+const STATE_SCHEMA_VERSION = 3;
+const MAX_UPLOAD_BODY_BYTES = 4 * 1024 * 1024;
 const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
+const ZAI_STALE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const PREVIEW_CACHE_TTL_MS = 45 * 1000;
 // 全量 preview 只在后台刷新；Codex 历史较多时需要分钟级，不应再用 GUI 热路径的 10 秒上限。
 const FULL_PREVIEW_TIMEOUT_MS = 10 * 60 * 1000;
+const FULL_PREVIEW_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const BACKGROUND_TICK_INTERVAL_MS = 60 * 1000;
 const LEADERBOARD_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const LEADERBOARD_CANDIDATE_TTL_MS = 5 * 60 * 1000;
+const LEADERBOARD_ENDPOINT = "https://scys.com/tokenrank/api/subapp/leaderboard?board=total&range=today&limit=500";
 const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
 const dnsFallbackCache = new Map();
 
@@ -34,10 +43,11 @@ const mime = {
   ".ico": "image/x-icon",
 };
 
-let state = loadState();
+let state = migrateLoadedState(loadState());
 let quotaCache = { at: 0, fingerprint: "", zai: null };
 const zaiLastGoodByAccount = new Map();
 const quotaRefreshPromises = new Map();
+let zaiRuntime = { fingerprint: "", source: "unknown" };
 let previewCache = { at: 0, date: "", snapshot: null };
 // claude-code 单工具用量缓存：opentoken upload 全量扫描常超时漏传 claude-code，
 // 这里用秒级的 `preview --tool claude-code` 单独补全本地真实用量。缓存同时保留原始
@@ -47,6 +57,11 @@ const claudeCodeLastGoodByDate = new Map();
 let usageRefresh = { date: "", promise: null };
 let claudeCodeRefresh = { date: "", promise: null };
 let leaderboardAutoRefresh = { at: 0, promise: null };
+let leaderboardCandidateCache = { at: 0, accountKey: "", metadata: null, entries: [] };
+let scysAccountGeneration = 0;
+let serviceCache = { at: 0, status: { ok: false, text: "正在检查 OpenToken service", running: false } };
+let backgroundTimer = null;
+let proxyRuntime = { upstreamUrl: String(state.upstreamUrl || ""), localWebhookUrl: "", proxied: false };
 // Windows 上旧版桌面进程会遗留 OPENTOKEN_BIN=.local\\bin\\opentoken.exe。
 // 已探测到官方新版时必须优先使用它，不能让陈旧环境变量把统计回退到 0.2.x。
 const OPENTOKEN = findOpenTokenBinary() || process.env.OPENTOKEN_BIN || state.opentokenBin || "opentoken";
@@ -57,6 +72,74 @@ function loadState() {
   } catch {
     return {};
   }
+}
+
+function redactedUploadRecord(record) {
+  if (!record || typeof record !== "object") return record || null;
+  const upstream = record.upstream && typeof record.upstream === "object"
+    ? {
+        operationId: String(record.upstream.operationId || record.operationId || ""),
+        sequence: Number(record.upstream.sequence || record.sequence || 0),
+        finishedAt: String(record.upstream.finishedAt || ""),
+        status: Number(record.upstream.status || 0),
+        ok: Boolean(record.upstream.ok),
+        accepted: record.upstream.accepted ?? record.upstream.json?.accepted ?? null,
+        errorCode: String(record.upstream.errorCode || ""),
+        accountKey: String(record.upstream.accountKey || record.accountKey || ""),
+      }
+    : undefined;
+  return {
+    operationId: String(record.operationId || ""),
+    accountKey: String(record.accountKey || ""),
+    sequence: Number(record.sequence || 0),
+    capturedAt: String(record.capturedAt || ""),
+    path: redactUploadPath(record.path || ""),
+    payloadHash: String(record.payloadHash || ""),
+    payloadKind: String(record.payloadKind || ""),
+    summary: record.summary ? {
+      date: String(record.summary.date || ""),
+      total: Math.max(0, Number(record.summary.total || 0)),
+      normalized: Math.max(0, Number(record.summary.normalized || 0)),
+      byTool: normalizeToolMap(record.summary.byTool || {}),
+      normalizedByTool: normalizeToolMap(record.summary.normalizedByTool || {}),
+      rowCount: Math.max(0, Number(record.summary.rowCount || 0)),
+    } : null,
+    ...(upstream ? { upstream } : {}),
+  };
+}
+
+function migrateLoadedState(input) {
+  const next = input && typeof input === "object" ? { ...input } : {};
+  next.schemaVersion = STATE_SCHEMA_VERSION;
+  const legacyPayload = next.lastUpload?.payload;
+  if (!next.localUsage && legacyPayload) {
+    const rows = rowsFromPayload(legacyPayload);
+    const date = next.lastUpload?.summary?.date || "";
+    if (date && rows.length) {
+      next.localUsage = mergeLocalUsageSnapshot(null, rows, {
+        date,
+        source: "legacy-upload-observed",
+        updatedAt: next.lastUpload?.capturedAt,
+      });
+    }
+  }
+  if (
+    !next.lastUpload?.upstream
+    && next.uploadTransport?.operationId
+    && next.uploadTransport.operationId === next.lastUpload?.operationId
+  ) next.lastUpload.upstream = next.uploadTransport;
+  delete next.uploadTransport;
+  next.lastUpload = redactedUploadRecord(next.lastUpload);
+  next.lastActivityUpload = redactedUploadRecord(next.lastActivityUpload);
+  if (next.manualUpload?.status === "running") {
+    next.manualUpload = {
+      ...next.manualUpload,
+      status: "interrupted",
+      finishedAt: new Date().toISOString(),
+      detail: "应用重启，上一次上报结果未知",
+    };
+  }
+  return next;
 }
 
 function findOpenTokenBinary() {
@@ -81,7 +164,13 @@ function findOpenTokenBinary() {
 
 function saveState() {
   fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+  state.schemaVersion = STATE_SCHEMA_VERSION;
+  state.lastUpload = redactedUploadRecord(state.lastUpload);
+  state.lastActivityUpload = redactedUploadRecord(state.lastActivityUpload);
+  delete state.uploadTransport;
+  const tempPath = `${STATE_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(state, null, 2) + "\n");
+  fs.renameSync(tempPath, STATE_PATH);
 }
 
 function logIslandEvent(message, details = {}) {
@@ -146,9 +235,46 @@ function isAnyLocalWebhook(webhook) {
   }
 }
 
+function validateScysUpstreamUrl(targetUrl) {
+  try {
+    const url = new URL(targetUrl);
+    return url.origin === DEFAULT_UPSTREAM_ORIGIN
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && /^\/tokenrank\/api\/subapp\/u\/[A-Za-z0-9_-]{1,200}\/?$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function accountKeyForUpstreamUrl(targetUrl) {
+  if (!validateScysUpstreamUrl(targetUrl)) return "";
+  const pathname = new URL(targetUrl).pathname.replace(/\/$/, "");
+  return crypto.createHash("sha256").update(pathname).digest("hex").slice(0, 24);
+}
+
+function isolateAccountState(input, previousAccountKey, nextAccountKey) {
+  const next = input && typeof input === "object" ? { ...input } : {};
+  const changed = previousAccountKey !== nextAccountKey && Boolean(previousAccountKey || nextAccountKey);
+  if (changed) {
+    delete next.userId;
+    delete next.leaderboard;
+    delete next.lastUpload;
+    delete next.lastActivityUpload;
+    delete next.uploadTransport;
+    delete next.manualUpload;
+    delete next.leaderboardNeedsRefresh;
+  }
+  if (nextAccountKey) next.accountKey = nextAccountKey;
+  else delete next.accountKey;
+  return { state: next, changed };
+}
+
 function localWebhookFor(upstreamUrl) {
   const upstream = new URL(upstreamUrl);
-  return `http://127.0.0.1:${PORT}${upstream.pathname}${upstream.search}`;
+  return `http://127.0.0.1:${PORT}${upstream.pathname}`;
 }
 
 function upstreamFromLocal(localUrl) {
@@ -159,6 +285,7 @@ function upstreamFromLocal(localUrl) {
 function ensureProxyConfig() {
   const config = readConfig();
   const current = String(config.webhook_url || "");
+  const previousAccountKey = String(state.accountKey || accountKeyForUpstreamUrl(state.upstreamUrl) || "");
   let stateChanged = false;
 
   if (OPENTOKEN !== "opentoken" && state.opentokenBin !== OPENTOKEN) {
@@ -168,6 +295,11 @@ function ensureProxyConfig() {
 
   if (state.upstreamUrl && isAnyLocalWebhook(state.upstreamUrl)) {
     state.upstreamUrl = upstreamFromLocal(state.upstreamUrl);
+    stateChanged = true;
+  }
+
+  if (state.upstreamUrl && !validateScysUpstreamUrl(state.upstreamUrl)) {
+    state.upstreamUrl = "";
     stateChanged = true;
   }
 
@@ -182,7 +314,7 @@ function ensureProxyConfig() {
         config.webhook_url = localWebhook;
         writeConfig(config);
       }
-    } else {
+    } else if (validateScysUpstreamUrl(current)) {
       state.upstreamUrl = current;
       stateChanged = true;
       const localWebhook = localWebhookFor(current);
@@ -196,13 +328,50 @@ function ensureProxyConfig() {
     writeConfig(config);
   }
 
-  if (stateChanged) saveState();
   const upstreamUrl = state.upstreamUrl || "";
-  return {
+  const nextAccountKey = accountKeyForUpstreamUrl(upstreamUrl);
+  const accountKeyChanged = String(state.accountKey || "") !== nextAccountKey;
+  const scoped = isolateAccountState(state, previousAccountKey, nextAccountKey);
+  state = scoped.state;
+  let adoptedLegacyScope = false;
+  if (nextAccountKey) {
+    for (const key of ["lastUpload", "lastActivityUpload"]) {
+      if (state[key] && !state[key].accountKey) {
+        state[key].accountKey = nextAccountKey;
+        adoptedLegacyScope = true;
+      }
+      if (state[key]?.upstream && !state[key].upstream.accountKey) {
+        state[key].upstream.accountKey = nextAccountKey;
+        adoptedLegacyScope = true;
+      }
+    }
+    if (state.leaderboard && !state.leaderboard.accountKey) {
+      state.leaderboard.accountKey = nextAccountKey;
+      adoptedLegacyScope = true;
+    }
+    if (state.manualUpload && !state.manualUpload.accountKey) {
+      state.manualUpload.accountKey = nextAccountKey;
+      adoptedLegacyScope = true;
+    }
+  }
+  if (scoped.changed) {
+    scysAccountGeneration += 1;
+    leaderboardCandidateCache = { at: 0, accountKey: "", metadata: null, entries: [] };
+    leaderboardAutoRefresh = { at: 0, promise: null };
+    logIslandEvent("isolated SCYS account state after webhook change", {
+      previousAccountKey,
+      nextAccountKey,
+    });
+  }
+  stateChanged = stateChanged || scoped.changed || accountKeyChanged || adoptedLegacyScope;
+  if (nextAccountKey && state.accountKey !== nextAccountKey) state.accountKey = nextAccountKey;
+  if (stateChanged) saveState();
+  proxyRuntime = {
     upstreamUrl,
     localWebhookUrl: upstreamUrl ? localWebhookFor(upstreamUrl) : current,
     proxied: Boolean(current && isLocalWebhook(readConfig().webhook_url || current)),
   };
+  return proxyRuntime;
 }
 
 function run(cmd, args, timeout = 30000) {
@@ -219,22 +388,86 @@ function run(cmd, args, timeout = 30000) {
   });
 }
 
-// 手动 Upload now：opentoken upload 全量 scan codex 原始日志常 >120s（codex 单日日志即 >45s），
-// 同步等待会卡死面板。改为后台触发、立即返回 202，前端靠 summary 轮询看数据更新。
-let backgroundUploadRunning = false;
+// 手动 Upload now 使用一个持久 operation；重复点击 join 同一任务，GUI 能看到真实终态。
+let backgroundUploadTask = null;
+function manualUploadView(joined = false) {
+  const operation = state.manualUpload || {};
+  return {
+    id: String(operation.id || ""),
+    status: String(operation.status || "idle"),
+    startedAt: String(operation.startedAt || ""),
+    finishedAt: String(operation.finishedAt || ""),
+    detail: String(operation.detail || ""),
+    joined,
+  };
+}
+
+function uploadFailureCode(result) {
+  const message = String(result?.message || "");
+  if (/timed out|timeout/i.test(message)) return "timeout";
+  if (result?.code) return `exit-${result.code}`;
+  return "command-failed";
+}
+
 function triggerBackgroundUpload() {
-  if (backgroundUploadRunning) return;
-  backgroundUploadRunning = true;
-  logIslandEvent("manual upload started", { via: "/api/upload" });
-  run(OPENTOKEN, ["upload"], 600000)
+  const accountKey = activeScysAccountKey();
+  if (backgroundUploadTask) {
+    if (backgroundUploadTask.accountKey === accountKey) return manualUploadView(true);
+    return {
+      id: "",
+      status: "blocked",
+      detail: "上一 SCYS 账号的上报进程仍在结束，请稍后重试",
+      joined: false,
+      blocked: true,
+    };
+  }
+  const startedAt = new Date().toISOString();
+  const operationId = crypto.randomUUID();
+  state.manualUpload = {
+    id: operationId,
+    accountKey,
+    status: "running",
+    startedAt,
+    finishedAt: "",
+    detail: "OpenToken 正在扫描并上报",
+  };
+  saveState();
+  logIslandEvent("manual upload started", { operationId: state.manualUpload.id, via: "/api/upload" });
+  const taskPromise = run(OPENTOKEN, ["upload"], 600000)
     .then((result) => {
+      if (state.manualUpload?.id !== operationId || activeScysAccountKey() !== accountKey) {
+        logIslandEvent("ignored manual upload completion after SCYS account change", { operationId });
+        return;
+      }
       if (result.ok) previewCache = { at: 0, date: "", snapshot: null };
+      const transport = transportForActiveAccount();
+      const latestTransportAt = Date.parse(transport.finishedAt || "");
+      const operationStartedAt = Date.parse(startedAt);
+      const transportAcked = result.ok
+        && Number.isFinite(latestTransportAt)
+        && latestTransportAt >= operationStartedAt
+        && transport.ok;
+      state.manualUpload = {
+        ...state.manualUpload,
+        status: result.ok ? (transportAcked ? "succeeded" : "completed") : "failed",
+        finishedAt: new Date().toISOString(),
+        detail: result.ok
+          ? (transportAcked ? "SCYS 已确认接收" : "OpenToken 已完成；本轮没有新的可上传数据")
+          : `OpenToken 上报失败（${uploadFailureCode(result)}）`,
+      };
+      saveState();
       logIslandEvent("manual upload finished", {
+        operationId: state.manualUpload.id,
         ok: result.ok,
-        ...(result.ok ? {} : { error: (result.stderr || result.stdout || result.message || "upload failed").slice(0, 200) }),
+        status: state.manualUpload.status,
+        ...(result.ok ? {} : { errorCode: uploadFailureCode(result) }),
       });
     })
-    .finally(() => { backgroundUploadRunning = false; });
+    .finally(() => {
+      if (backgroundUploadTask?.operationId === operationId) backgroundUploadTask = null;
+    });
+  backgroundUploadTask = { accountKey, operationId, promise: taskPromise };
+  return manualUploadView(false);
 }
 
 function openExternalUrl(targetUrl) {
@@ -280,11 +513,28 @@ function openLogsFile() {
   });
 }
 
-function readBody(req) {
-  return new Promise((resolve) => {
+function readBody(req, limit = MAX_UPLOAD_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    let size = 0;
+    let settled = false;
+    req.on("data", (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > limit) {
+        settled = true;
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!settled) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (error) => {
+      if (!settled) reject(error);
+    });
   });
 }
 
@@ -423,6 +673,176 @@ function rawTokens(row) {
     + Number(row.cache_write || 0);
 }
 
+function uploadRejected(reason) {
+  throw new Error(`Upload payload rejected: ${reason}`);
+}
+
+function plainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactKeys(value, allowed, context) {
+  if (!plainObject(value)) uploadRejected(`${context} must be an object`);
+  const extras = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (extras.length) uploadRejected(`${context} contains unknown field ${extras[0]}`);
+}
+
+function safeProtocolString(value, field, maxLength = 160, { allowEmpty = false, sensitiveCheck = true } = {}) {
+  if (typeof value !== "string") uploadRejected(`${field} must be a string`);
+  const text = value.trim();
+  if ((!allowEmpty && !text) || text.length > maxLength) uploadRejected(`${field} has invalid length`);
+  if (sensitiveCheck && (
+    /[\r\n]/.test(text)
+    || /[a-z]:[\\/]/i.test(text)
+    || /-----BEGIN [A-Z ]+PRIVATE KEY-----/.test(text)
+    || /(?:^|[\\/])(?:users|home|documents|desktop|private|\.ssh)(?:[\\/]|$)/i.test(text)
+    || /(?:api[_-]?key|authorization|bearer|cookie|password|prompt|response|command|cwd)=/i.test(text)
+  )) {
+    uploadRejected(`${field} resembles sensitive content`);
+  }
+  return text;
+}
+
+function safeNonNegativeNumber(value, field) {
+  if (value === undefined) return 0;
+  if (typeof value !== "number") uploadRejected(`${field} must be a JSON number`);
+  const number = value;
+  if (!Number.isFinite(number) || number < 0) uploadRejected(`${field} must be a non-negative number`);
+  return number;
+}
+
+function safeOpaqueToken(value, field, minLength = 8, maxLength = 512) {
+  if (typeof value !== "string") uploadRejected(`${field} must be a string`);
+  const text = value.trim();
+  if (text.length < minLength || text.length > maxLength || !/^[A-Za-z0-9_-]+={0,2}$/.test(text)) {
+    uploadRejected(`${field} must be a bounded hex or base64url token`);
+  }
+  return text;
+}
+
+function safeInteger(value, field) {
+  const number = safeNonNegativeNumber(value, field);
+  if (!Number.isInteger(number)) uploadRejected(`${field} must be an integer`);
+  return number;
+}
+
+const USAGE_ROW_KEYS = ["date", "tool", "model", "input", "output", "cache_read", "cache_write", "normalized"];
+function sanitizeUsageRow(row, index = 0) {
+  exactKeys(row, USAGE_ROW_KEYS, `rows[${index}]`);
+  const date = safeProtocolString(row.date, `rows[${index}].date`, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) uploadRejected(`rows[${index}].date is invalid`);
+  return {
+    date,
+    tool: safeProtocolString(row.tool, `rows[${index}].tool`, 80),
+    model: safeProtocolString(row.model ?? "unknown", `rows[${index}].model`, 160),
+    input: safeNonNegativeNumber(row.input, `rows[${index}].input`),
+    output: safeNonNegativeNumber(row.output, `rows[${index}].output`),
+    cache_read: safeNonNegativeNumber(row.cache_read, `rows[${index}].cache_read`),
+    cache_write: safeNonNegativeNumber(row.cache_write, `rows[${index}].cache_write`),
+    normalized: safeNonNegativeNumber(row.normalized, `rows[${index}].normalized`),
+  };
+}
+
+const SESSION_ROW_KEYS = ["date", "tool", "sessions", "messages", "user_messages", "active_seconds", "duration_seconds"];
+function sanitizeSessionRow(row, index = 0) {
+  exactKeys(row, SESSION_ROW_KEYS, `sessions[${index}]`);
+  const date = safeProtocolString(row.date, `sessions[${index}].date`, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) uploadRejected(`sessions[${index}].date is invalid`);
+  return {
+    date,
+    tool: safeProtocolString(row.tool, `sessions[${index}].tool`, 80),
+    sessions: safeInteger(row.sessions, `sessions[${index}].sessions`),
+    messages: safeInteger(row.messages, `sessions[${index}].messages`),
+    user_messages: safeInteger(row.user_messages, `sessions[${index}].user_messages`),
+    active_seconds: safeNonNegativeNumber(row.active_seconds, `sessions[${index}].active_seconds`),
+    duration_seconds: safeNonNegativeNumber(row.duration_seconds, `sessions[${index}].duration_seconds`),
+  };
+}
+
+function sanitizeActivityEvent(event, index = 0) {
+  if (!plainObject(event)) uploadRejected(`events[${index}] must be an object`);
+  const type = safeProtocolString(event.type, `events[${index}].type`, 40);
+  if (type === "usage_hourly") {
+    exactKeys(event, ["type", "tool", "model", "hour_utc", "input", "output", "cache_read", "cache_write"], `events[${index}]`);
+    return {
+      type,
+      tool: safeProtocolString(event.tool, `events[${index}].tool`, 80),
+      model: safeProtocolString(event.model ?? "unknown", `events[${index}].model`, 160),
+      hour_utc: safeProtocolString(event.hour_utc, `events[${index}].hour_utc`, 40),
+      input: safeNonNegativeNumber(event.input, `events[${index}].input`),
+      output: safeNonNegativeNumber(event.output, `events[${index}].output`),
+      cache_read: safeNonNegativeNumber(event.cache_read, `events[${index}].cache_read`),
+      cache_write: safeNonNegativeNumber(event.cache_write, `events[${index}].cache_write`),
+    };
+  }
+  if (type === "session") {
+    exactKeys(event, ["type", "tool", "session_key", "started_at", "ended_at", "messages", "user_messages", "active_seconds"], `events[${index}]`);
+    return {
+      type,
+      tool: safeProtocolString(event.tool, `events[${index}].tool`, 80),
+      session_key: safeProtocolString(event.session_key, `events[${index}].session_key`, 160),
+      started_at: safeProtocolString(event.started_at, `events[${index}].started_at`, 40),
+      ended_at: safeProtocolString(event.ended_at, `events[${index}].ended_at`, 40),
+      messages: safeInteger(event.messages, `events[${index}].messages`),
+      user_messages: safeInteger(event.user_messages, `events[${index}].user_messages`),
+      active_seconds: safeNonNegativeNumber(event.active_seconds, `events[${index}].active_seconds`),
+    };
+  }
+  if (type === "client_health") {
+    exactKeys(event, ["type", "captured_at", "payload"], `events[${index}]`);
+    exactKeys(event.payload, ["scan_ms", "ledger", "unhoured"], `events[${index}].payload`);
+    exactKeys(event.payload.ledger, ["usage", "hourly", "v2_sessions"], `events[${index}].payload.ledger`);
+    return {
+      type,
+      captured_at: safeProtocolString(event.captured_at, `events[${index}].captured_at`, 40),
+      payload: {
+        scan_ms: safeNonNegativeNumber(event.payload.scan_ms, `events[${index}].payload.scan_ms`),
+        ledger: {
+          usage: safeInteger(event.payload.ledger.usage, `events[${index}].payload.ledger.usage`),
+          hourly: safeInteger(event.payload.ledger.hourly, `events[${index}].payload.ledger.hourly`),
+          v2_sessions: safeInteger(event.payload.ledger.v2_sessions, `events[${index}].payload.ledger.v2_sessions`),
+        },
+        unhoured: safeInteger(event.payload.unhoured, `events[${index}].payload.unhoured`),
+      },
+    };
+  }
+  uploadRejected(`events[${index}].type is unsupported`);
+}
+
+function sanitizeUploadPayload(payload) {
+  if (!plainObject(payload)) uploadRejected("root must be an object");
+  if (Array.isArray(payload.rows)) {
+    exactKeys(payload, ["version", "device", "rows", "sessions"], "root");
+    if (payload.rows.length > 10000 || (payload.sessions || []).length > 10000) uploadRejected("too many rows");
+    return {
+      version: typeof payload.version === "string"
+        ? safeProtocolString(payload.version, "version", 20)
+        : safeNonNegativeNumber(payload.version, "version"),
+      device: safeProtocolString(payload.device, "device", 160),
+      rows: payload.rows.map(sanitizeUsageRow),
+      sessions: (Array.isArray(payload.sessions) ? payload.sessions : uploadRejected("sessions must be an array")).map(sanitizeSessionRow),
+    };
+  }
+  if (Array.isArray(payload.events)) {
+    exactKeys(payload, ["schema", "version", "device", "seq", "sent_at", "tz", "nonce", "events", "sig"], "root");
+    if (payload.events.length > 10000) uploadRejected("too many events");
+    return {
+      schema: safeProtocolString(payload.schema, "schema", 80),
+      version: typeof payload.version === "string"
+        ? safeProtocolString(payload.version, "version", 20)
+        : safeNonNegativeNumber(payload.version, "version"),
+      device: safeProtocolString(payload.device, "device", 160),
+      seq: safeInteger(payload.seq, "seq"),
+      sent_at: safeProtocolString(payload.sent_at, "sent_at", 40),
+      tz: safeProtocolString(payload.tz, "tz", 80),
+      nonce: safeOpaqueToken(payload.nonce, "nonce"),
+      events: payload.events.map(sanitizeActivityEvent),
+      sig: safeOpaqueToken(payload.sig, "sig", 16),
+    };
+  }
+  uploadRejected("unknown schema");
+}
+
 function normalizeToolName(name) {
   const clean = String(name || "unknown")
     .trim()
@@ -469,46 +889,6 @@ function normalizeToolMap(byTool = {}) {
   return normalized;
 }
 
-function mergeKnownToolUsage(localInput = {}, leaderboardInput = {}) {
-  const local = normalizeToolMap(localInput);
-  const leaderboard = normalizeToolMap(leaderboardInput);
-  const names = new Set([...Object.keys(local), ...Object.keys(leaderboard)]);
-  const byTool = {};
-  const sourceByTool = {};
-  for (const name of names) {
-    const localValue = Math.max(0, Number(local[name] || 0));
-    const leaderboardValue = Math.max(0, Number(leaderboard[name] || 0));
-    const value = Math.max(localValue, leaderboardValue);
-    if (value <= 0) continue;
-    byTool[name] = value;
-    sourceByTool[name] = leaderboardValue > localValue
-      ? "leaderboard"
-      : localValue > leaderboardValue
-        ? "local"
-        : "matched";
-  }
-  return { byTool, sourceByTool };
-}
-
-function annotateUsageToolSources(tools = [], sourceByTool = {}) {
-  const sourceLabels = {
-    leaderboard: "榜单多端汇总",
-    local: "本机原始",
-    matched: "本机与榜单一致",
-  };
-  return tools.map((tool) => {
-    const source = sourceByTool[tool.name] || "local";
-    const sourceLabel = sourceLabels[source] || sourceLabels.local;
-    const localDetail = source === "leaderboard" ? "" : String(tool.detail || "");
-    return {
-      ...tool,
-      source,
-      sourceLabel,
-      detail: [sourceLabel, localDetail].filter(Boolean).join(" · "),
-    };
-  });
-}
-
 function summarizeRows(rows, preferredDate = "") {
   const dates = [...new Set(rows.map((row) => row.date).filter(Boolean))].sort();
   // 传入日期代表调用方要求严格的日边界；当天没有行时必须返回 0，不能悄悄回退到昨天。
@@ -527,6 +907,77 @@ function summarizeRows(rows, preferredDate = "") {
   }
   const total = Object.values(byTool).reduce((sum, value) => sum + value, 0);
   return { date, total, normalized, byTool, normalizedByTool, rowCount: dayRows.length };
+}
+
+function localUsageRow(row, fallbackDate = "") {
+  if (!row || typeof row !== "object") return null;
+  const date = String(row.date || fallbackDate || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const tool = normalizeToolName(row.tool || row.provider || row.client || "unknown");
+  const model = String(row.model || "unknown").slice(0, 160);
+  const clean = { date, tool, model };
+  for (const field of ["input", "output", "cache_read", "cache_write", "normalized"]) {
+    const value = Number(row[field] || 0);
+    clean[field] = Number.isFinite(value) && value >= 0 ? value : 0;
+  }
+  return clean;
+}
+
+function localUsageRowKey(row) {
+  return `${row.date}\u0000${row.tool}\u0000${row.model}`;
+}
+
+function mergeLocalUsageSnapshot(previous, incomingRows = [], options = {}) {
+  const date = String(options.date || localDateString());
+  const replace = Boolean(options.replace);
+  const reset = replace || previous?.date !== date;
+  const rowsByKey = new Map();
+  if (!reset) {
+    for (const item of previous?.rows || []) {
+      const row = localUsageRow(item, date);
+      if (row && row.date === date) rowsByKey.set(localUsageRowKey(row), row);
+    }
+  }
+  for (const item of incomingRows) {
+    const row = localUsageRow(item, date);
+    if (!row || row.date !== date) continue;
+    const key = localUsageRowKey(row);
+    const existing = rowsByKey.get(key);
+    if (!existing || replace) {
+      rowsByKey.set(key, row);
+      continue;
+    }
+    rowsByKey.set(key, {
+      ...existing,
+      input: Math.max(existing.input, row.input),
+      output: Math.max(existing.output, row.output),
+      cache_read: Math.max(existing.cache_read, row.cache_read),
+      cache_write: Math.max(existing.cache_write, row.cache_write),
+      normalized: Math.max(existing.normalized, row.normalized),
+    });
+  }
+  const rows = [...rowsByKey.values()].sort((a, b) => localUsageRowKey(a).localeCompare(localUsageRowKey(b)));
+  const summary = summarizeRows(rows, date);
+  const updatedAt = String(options.updatedAt || new Date().toISOString());
+  return {
+    schemaVersion: 1,
+    revision: Math.max(0, Number(previous?.revision || 0)) + 1,
+    date,
+    source: String(options.source || (replace ? "preview" : "upload-observed")),
+    completeness: replace || (!reset && previous?.completeness === "full") ? "full" : "observed",
+    updatedAt,
+    fullAt: replace ? updatedAt : String(!reset ? previous?.fullAt || "" : ""),
+    rows,
+    summary,
+  };
+}
+
+function persistLocalUsageRows(rows, options = {}) {
+  const date = String(options.date || localDateString());
+  if (date !== localDateString() && state.localUsage?.date === localDateString()) return state.localUsage;
+  state.localUsage = mergeLocalUsageSnapshot(state.localUsage, rows, { ...options, date });
+  saveState();
+  return state.localUsage;
 }
 
 function toolsFromUsageMaps(rawByTool = {}, normalizedByTool = {}) {
@@ -757,6 +1208,8 @@ function zaiQuotaUnavailable(reason = "waiting") {
     quotaItemUnavailable("glm-5h", "5小时额度", reason),
     quotaItemUnavailable("glm-mcp", "MCP额度", reason),
     ]),
+    quotaReason: reason,
+    trendReason: reason,
     usageTrend: emptyZaiUsageTrend(reason),
   };
 }
@@ -844,15 +1297,53 @@ function zaiHistoryLabel(value = "") {
   return text || "--";
 }
 
+function normalizeZaiHistoryTime(value) {
+  const text = String(value || "").trim();
+  const local = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/);
+  if (local) {
+    const [, year, month, day, hour, minute = "00", second = "00", millis = "0"] = local;
+    const parsed = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number(millis.padEnd(3, "0")),
+    );
+    if (
+      parsed.getFullYear() === Number(year)
+      && parsed.getMonth() === Number(month) - 1
+      && parsed.getDate() === Number(day)
+      && parsed.getHours() === Number(hour)
+      && parsed.getMinutes() === Number(minute)
+      && parsed.getSeconds() === Number(second)
+    ) return localHourKey(parsed);
+    return "";
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) {
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? "" : localHourKey(parsed);
+  }
+  const daily = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!daily) return "";
+  const parsed = new Date(Number(daily[1]), Number(daily[2]) - 1, Number(daily[3]), 12);
+  return parsed.getFullYear() === Number(daily[1])
+    && parsed.getMonth() === Number(daily[2]) - 1
+    && parsed.getDate() === Number(daily[3])
+    ? localDateString(parsed)
+    : "";
+}
+
 function zaiUsageHistory(resp, includeEmpty = false) {
   const data = resp?.json?.data || {};
   const times = Array.isArray(data.x_time) ? data.x_time : [];
   const tokens = Array.isArray(data.tokensUsage) ? data.tokensUsage : [];
   const history = times.map((time, index) => {
-    const hasHour = String(time || "").includes(" ");
-    const date = hasHour ? String(time).replace(" ", "T").slice(0, 13) : String(time || "").slice(0, 10);
-    return { date, used: Number(tokens[index] || 0) };
-  });
+    const date = normalizeZaiHistoryTime(time);
+    const used = Number(tokens[index] || 0);
+    return { date, used: Number.isFinite(used) && used >= 0 ? used : 0 };
+  }).filter((item) => item.date);
   return includeEmpty ? history : history.filter((item) => item.used > 0);
 }
 
@@ -917,7 +1408,13 @@ function zaiUsageResponseState(resp) {
   if (!resp.ok || resp.json?.code !== 200) return "error";
   const data = resp.json?.data;
   if (!data || !Array.isArray(data.x_time) || !Array.isArray(data.tokensUsage)) return "error";
-  return data.x_time.length === data.tokensUsage.length ? "ok" : "error";
+  if (data.x_time.length !== data.tokensUsage.length) return "error";
+  const valid = data.x_time.every((time, index) => (
+    Boolean(normalizeZaiHistoryTime(time))
+    && Number.isFinite(Number(data.tokensUsage[index]))
+    && Number(data.tokensUsage[index]) >= 0
+  ));
+  return valid ? "ok" : "error";
 }
 
 function usagePeriodFromHistory(key, label, history = [], limit = 12, status = "ok") {
@@ -928,6 +1425,9 @@ function usagePeriodFromHistory(key, label, history = [], limit = 12, status = "
     key,
     label,
     status,
+    empty: (status === "ok" || status === "stale") && total === 0,
+    bucketCount: bars.length,
+    bucketUnit: key === "24h" ? "hour" : "day",
     total,
     totalLabel: status === "ok" || status === "stale" ? formatCount(total) : "--",
     bars,
@@ -937,7 +1437,11 @@ function usagePeriodFromHistory(key, label, history = [], limit = 12, status = "
 
 function zaiUsagePeriod(key, label, resp, limit, groupByDay = false, historyOverride = null) {
   const status = zaiUsageResponseState(resp);
-  if (status !== "ok") return usagePeriodFromHistory(key, label, [], limit, status);
+  if (status !== "ok") {
+    const period = usagePeriodFromHistory(key, label, [], limit, status);
+    const message = resp?.json?.msg || resp?.error || resp?.status || "";
+    return { ...period, reason: status === "waiting" ? "waiting" : zaiFailureReason(message) };
+  }
 
   const overridden = Array.isArray(historyOverride);
   const rawHistory = overridden ? historyOverride : zaiUsageHistory(resp);
@@ -971,21 +1475,29 @@ function trendStatus(periods = []) {
   if (statuses.length && statuses.every((status) => status === "ok")) return "ok";
   if (statuses.length && statuses.every((status) => status === "stale")) return "stale";
   if (statuses.some((status) => status === "ok" || status === "stale")) return "partial";
+  if (statuses.some((status) => status === "expired")) return "expired";
   if (statuses.length && statuses.every((status) => status === "waiting")) return "waiting";
   return "error";
 }
 
 function buildZaiUsageTrend(resp1d, resp30d) {
-  const history24h = zaiUsagePeriod("24h", "24小时", resp1d, 24, false, recentHourlyUsageHistory(resp1d, 24));
-  const history1d = zaiUsagePeriod("1d", "日", resp1d, 12);
-  const history7d = zaiUsagePeriod("7d", "7天", resp30d, 7, false, recentDailyUsageHistory(resp30d, 7));
-  const history30d = zaiUsagePeriod("30d", "30天", resp30d, 15, true);
+  const capturedAt = new Date().toISOString();
+  const stamp = (period) => period.status === "ok" ? { ...period, capturedAt } : period;
+  const history24h = stamp(zaiUsagePeriod("24h", "24小时", resp1d, 24, false, recentHourlyUsageHistory(resp1d, 24)));
+  const history1d = stamp(zaiUsagePeriod("1d", "日", resp1d, 12));
+  const history7d = stamp(zaiUsagePeriod("7d", "7天", resp30d, 7, false, recentDailyUsageHistory(resp30d, 7)));
+  const history30d = stamp(zaiUsagePeriod("30d", "30天", resp30d, 30, false, recentDailyUsageHistory(resp30d, 30)));
   const periods = [history24h, history7d, history30d];
   return {
     key: "glm",
     label: "GLM 消耗趋势",
     source: "Z.ai 用量接口",
     status: trendStatus(periods),
+    reason: periods.some((period) => period.status === "error" && period.reason === "auth")
+      ? "auth"
+      : periods.some((period) => period.status === "error")
+        ? "read"
+        : "",
     history24h,
     history1d,
     history7d,
@@ -996,10 +1508,10 @@ function buildZaiUsageTrend(resp1d, resp30d) {
 
 function emptyZaiUsageTrend(reason = "waiting") {
   const status = reason === "waiting" ? "waiting" : "error";
-  const history24h = usagePeriodFromHistory("24h", "24小时", [], 24, status);
-  const history1d = usagePeriodFromHistory("1d", "日", [], 12, status);
-  const history7d = usagePeriodFromHistory("7d", "7天", [], 7, status);
-  const history30d = usagePeriodFromHistory("30d", "30天", [], 15, status);
+  const history24h = { ...usagePeriodFromHistory("24h", "24小时", [], 24, status), reason };
+  const history1d = { ...usagePeriodFromHistory("1d", "日", [], 12, status), reason };
+  const history7d = { ...usagePeriodFromHistory("7d", "7天", [], 7, status), reason };
+  const history30d = { ...usagePeriodFromHistory("30d", "30天", [], 30, status), reason };
   return {
     key: "glm",
     label: "GLM 消耗趋势",
@@ -1038,16 +1550,20 @@ function readWindowsUserEnv(name) {
   }
 }
 
-function enabledZaiAccounts() {
+function enabledZaiAccounts({ includeWindowsUserEnv = true } = {}) {
   const config = readCodingQuotaConfig();
   const accounts = (config.providers?.zhipu?.accounts || [])
     .filter((account) => {
       const apiKey = String(account?.apiKey || "").trim();
       return account?.enabled && apiKey && !apiKey.startsWith("enc:");
-    });
-  const envKey = String(process.env.Z_AI_API_KEY || readWindowsUserEnv("Z_AI_API_KEY") || "").trim();
-  if (envKey) {
-    accounts.push({ enabled: true, apiKey: envKey, label: "env" });
+    })
+    .map((account) => ({ ...account, source: "config" }));
+  const processEnvKey = String(process.env.Z_AI_API_KEY || "").trim();
+  if (processEnvKey) {
+    accounts.push({ enabled: true, apiKey: processEnvKey, label: "env", source: "process-env" });
+  } else if (includeWindowsUserEnv && !accounts.length) {
+    const userEnvKey = String(readWindowsUserEnv("Z_AI_API_KEY") || "").trim();
+    if (userEnvKey) accounts.push({ enabled: true, apiKey: userEnvKey, label: "env", source: "windows-user-env" });
   }
   return accounts;
 }
@@ -1064,32 +1580,51 @@ async function fetchZaiQuotaForAccount(account) {
     accept: "application/json",
     "user-agent": "opentoken-island/0.1",
   };
-  const quotaResp = await requestTextWithRetry(
-    "GET",
-    `${ZAI_CODING_API_BASE}/api/monitor/usage/quota/limit`,
-    "",
-    headers,
-    30000,
-    2
-  );
-
-  if (!quotaResp.ok || quotaResp.json?.code !== 200 || !Array.isArray(quotaResp.json?.data?.limits)) {
-    const message = quotaResp.json?.msg || quotaResp.error || "quota read failed";
-    return zaiQuotaUnavailable(zaiFailureReason(message));
-  }
-
   const now = new Date();
   const oneDayAgo = new Date(now.getTime() - 86400000);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
-  const [usageResp, usage30dResp] = await Promise.all([
+  const [quotaResp, usageResp, usage30dResp] = await Promise.all([
+    requestTextWithRetry(
+      "GET",
+      `${ZAI_CODING_API_BASE}/api/monitor/usage/quota/limit`,
+      "",
+      headers,
+      30000,
+      2,
+    ),
     requestTextWithRetry("GET", zaiUsageUrl(oneDayAgo, now), "", headers, 30000, 2),
     requestTextWithRetry("GET", zaiUsageUrl(thirtyDaysAgo, now), "", headers, 30000, 2),
   ]);
 
+  return buildZaiQuotaFeed(account, quotaResp, usageResp, usage30dResp);
+}
+
+function buildZaiQuotaFeed(account, quotaResp, usageResp, usage30dResp) {
+  const usageTrend = buildZaiUsageTrend(usageResp, usage30dResp);
+  const quotaOk = Boolean(
+    quotaResp.ok
+    && quotaResp.json?.code === 200
+    && Array.isArray(quotaResp.json?.data?.limits),
+  );
+  if (!quotaOk) {
+    const message = quotaResp.json?.msg || quotaResp.error || "quota read failed";
+    const reason = zaiFailureReason(message);
+    const unavailable = zaiQuotaUnavailable(reason);
+    const trendAvailable = hasUsableZaiData({ usageTrend });
+    return {
+      ...unavailable,
+      label: account.label ? `GLM / Z.ai · ${account.label}` : "GLM / Z.ai",
+      status: trendAvailable ? "partial" : unavailable.status,
+      detail: trendAvailable ? "额度读取失败，GLM 趋势仍可用" : unavailable.detail,
+      quotaReason: reason,
+      trendReason: usageTrend.reason || "",
+      usageTrend,
+    };
+  }
+
   const items = zaiQuotaItems(quotaResp.json.data.limits, usageResp);
   const primary = items.find((item) => item.key === "glm-5h") || items[0];
   const levelLabel = quotaResp.json.data.level ? String(quotaResp.json.data.level).toUpperCase() : "";
-  const usageTrend = buildZaiUsageTrend(usageResp, usage30dResp);
   const feedStatus = usageTrend.status === "ok" ? "ok" : "partial";
   const trendDetail = feedStatus === "ok" ? "" : " · 部分趋势读取失败，保留可用数据";
 
@@ -1097,6 +1632,8 @@ async function fetchZaiQuotaForAccount(account) {
     key: "glm",
     label: account.label ? `GLM / Z.ai · ${account.label}` : "GLM / Z.ai",
     status: feedStatus,
+    quotaReason: "",
+    trendReason: usageTrend.reason || "",
     value: primary?.value || 0,
     total: primary?.total || 0,
     valueLabel: primary?.valueLabel || "--",
@@ -1108,31 +1645,154 @@ async function fetchZaiQuotaForAccount(account) {
   };
 }
 
+function zaiFeedQuality(feed) {
+  const periods = feed?.usageTrend?.periods || [];
+  return periods.reduce((score, period) => (
+    score + (period?.status === "ok" ? 2 : period?.status === "stale" ? 1 : 0)
+  ), 0);
+}
+
 async function fetchZaiQuota(accounts = enabledZaiAccounts()) {
   if (!accounts.length) {
     return zaiQuotaUnavailable("not-connected");
   }
 
   let lastError = zaiQuotaUnavailable("read");
+  let bestPartial = null;
   for (const account of accounts) {
     const result = await fetchZaiQuotaForAccount(account);
     if (result.status === "ok") return result;
+    if (result.status === "partial" && (!bestPartial || zaiFeedQuality(result) > zaiFeedQuality(bestPartial))) {
+      bestPartial = result;
+    }
     lastError = result;
   }
-  return lastError;
+  return bestPartial || lastError;
 }
 
 function quotaCacheTtl(feed) {
   return feed?.status === "ok" ? QUOTA_CACHE_TTL_MS : QUOTA_ERROR_CACHE_TTL_MS;
 }
 
-function staleUsagePeriod(period) {
-  return period ? { ...period, status: "stale" } : null;
+function staleUsagePeriod(period, fallbackCapturedAt = "", now = Date.now()) {
+  if (!period || !["ok", "stale"].includes(period.status) || !Array.isArray(period.bars)) return null;
+  const capturedAt = period.capturedAt || fallbackCapturedAt;
+  if (zaiSnapshotExpired({ capturedAt }, now)) return null;
+  return { ...period, status: "stale" };
 }
 
-function retainLastGoodZaiQuota(fresh, lastGood, staleAt = new Date().toISOString()) {
+function zaiSnapshotExpired(feed, now = Date.now()) {
+  const capturedAt = Date.parse(feed?.capturedAt || "");
+  return !Number.isFinite(capturedAt) || now - capturedAt > ZAI_STALE_MAX_AGE_MS;
+}
+
+function expireUsagePeriod(period, fallbackCapturedAt = "") {
+  if (!period || !["ok", "stale", "expired"].includes(period.status)) return period || null;
+  return {
+    ...period,
+    status: "expired",
+    reason: "expired",
+    capturedAt: period.capturedAt || fallbackCapturedAt,
+    empty: false,
+    bucketCount: 0,
+    total: 0,
+    totalLabel: "--",
+    bars: [],
+    peakLabel: "--",
+    latestLabel: "--",
+  };
+}
+
+function latestZaiSuccessfulAt(feed) {
+  const values = [
+    feed?.lastSuccessfulAt,
+    feed?.capturedAt,
+    ...((feed?.usageTrend?.periods || []).map((period) => period?.capturedAt)),
+    feed?.usageTrend?.history1d?.capturedAt,
+  ].map((value) => Date.parse(value || "")).filter(Number.isFinite);
+  return values.length ? new Date(Math.max(...values)).toISOString() : "";
+}
+
+function normalizeZaiFeedFreshness(feed, now = Date.now()) {
+  if (!feed?.usageTrend) return feed;
+  const fallbackCapturedAt = feed.lastSuccessfulAt || feed.capturedAt || "";
+  const normalizePeriod = (period) => {
+    if (!period || !["ok", "stale"].includes(period.status)) return period;
+    const capturedAt = period.capturedAt || fallbackCapturedAt;
+    return zaiSnapshotExpired({ capturedAt }, now)
+      ? expireUsagePeriod(period, fallbackCapturedAt)
+      : { ...period, capturedAt };
+  };
+  const periods = (feed.usageTrend.periods || []).map(normalizePeriod).filter(Boolean);
+  const periodByKey = new Map(periods.map((period) => [period.key, period]));
+  const history1d = normalizePeriod(feed.usageTrend.history1d);
+  const usageTrend = {
+    ...feed.usageTrend,
+    status: trendStatus(periods),
+    history24h: periodByKey.get("24h") || feed.usageTrend.history24h,
+    history1d: history1d || feed.usageTrend.history1d,
+    history7d: periodByKey.get("7d") || feed.usageTrend.history7d,
+    history30d: periodByKey.get("30d") || feed.usageTrend.history30d,
+    periods,
+  };
+  const lastSuccessfulAt = latestZaiSuccessfulAt({ ...feed, usageTrend });
+  let status = feed.status;
+  if (usageTrend.status === "expired") status = "expired";
+  else if (usageTrend.status === "partial") status = "partial";
+  else if (usageTrend.status === "stale" && status !== "partial") status = "stale";
+  return {
+    ...feed,
+    status,
+    capturedAt: lastSuccessfulAt || feed.capturedAt,
+    lastSuccessfulAt,
+    ...(usageTrend.status === "expired" ? { expiredAt: lastSuccessfulAt || feed.expiredAt || "" } : {}),
+    usageTrend,
+  };
+}
+
+function retainLastGoodZaiQuota(fresh, lastGood, staleAt = new Date().toISOString(), now = Date.now()) {
   if (!lastGood || fresh?.status === "ok") return fresh;
-  if (["auth", "not-connected"].includes(fresh?.reason)) return fresh;
+  if (
+    fresh?.reason === "not-connected"
+    || fresh?.trendReason === "auth"
+    || (fresh?.reason === "auth" && !fresh?.quotaReason)
+  ) return fresh;
+  if (zaiSnapshotExpired(lastGood, now)) {
+    if (hasUsableZaiData(fresh)) return fresh;
+    const oldTrend = lastGood?.usageTrend || emptyZaiUsageTrend("read");
+    const currentByKey = new Map((fresh?.usageTrend?.periods || []).map((period) => [period.key, period]));
+    const periods = (oldTrend.periods || []).map((period) => (
+      ["ok", "stale", "expired"].includes(period?.status)
+        ? expireUsagePeriod(period, lastGood.capturedAt)
+        : currentByKey.get(period?.key) || period
+    )).filter(Boolean);
+    const periodByKey = new Map(periods.map((period) => [period.key, period]));
+    const expiredDay = ["ok", "stale", "expired"].includes(oldTrend.history1d?.status)
+      ? expireUsagePeriod(oldTrend.history1d, lastGood.capturedAt)
+      : fresh?.usageTrend?.history1d || oldTrend.history1d;
+    const usageTrend = {
+      ...oldTrend,
+      ...(fresh?.usageTrend || {}),
+      status: trendStatus(periods),
+      history24h: periodByKey.get("24h") || fresh?.usageTrend?.history24h,
+      history1d: expiredDay,
+      history7d: periodByKey.get("7d") || fresh?.usageTrend?.history7d,
+      history30d: periodByKey.get("30d") || fresh?.usageTrend?.history30d,
+      periods,
+    };
+    const lastSuccessfulAt = latestZaiSuccessfulAt(lastGood) || lastGood.capturedAt || "";
+    return {
+      ...fresh,
+      status: "expired",
+      reason: "expired",
+      capturedAt: lastSuccessfulAt,
+      lastSuccessfulAt,
+      lastAttemptAt: staleAt,
+      expiredAt: lastSuccessfulAt,
+      detail: "最近成功的 GLM 数据已超过 12 小时，不再作为当前趋势显示",
+      usageTrend,
+    };
+  }
 
   const freshTrend = fresh?.usageTrend;
   const oldTrend = lastGood?.usageTrend;
@@ -1142,46 +1802,83 @@ function retainLastGoodZaiQuota(fresh, lastGood, staleAt = new Date().toISOStrin
   const periods = ["24h", "7d", "30d"].map((key) => {
     const current = currentByKey.get(key);
     if (current?.status === "ok") return current;
-    return staleUsagePeriod(oldByKey.get(key)) || current;
+    if (current?.reason === "auth") return current;
+    const old = oldByKey.get(key);
+    return staleUsagePeriod(old, lastGood.capturedAt, now)
+      || (["ok", "stale", "expired"].includes(old?.status) ? expireUsagePeriod(old, lastGood.capturedAt) : current);
   }).filter(Boolean);
   const periodByKey = new Map(periods.map((period) => [period.key, period]));
   const legacyDay = freshTrend?.history1d?.status === "ok"
     ? freshTrend.history1d
-    : staleUsagePeriod(oldTrend.history1d);
+    : staleUsagePeriod(oldTrend.history1d, lastGood.capturedAt, now) || freshTrend?.history1d;
+  const retainedStatus = trendStatus(periods);
   const usageTrend = {
     ...oldTrend,
     ...(freshTrend || {}),
-    status: periods.every((period) => period.status === "stale") ? "stale" : "partial",
-    history24h: periodByKey.get("24h") || oldTrend.history24h,
-    history1d: legacyDay || oldTrend.history1d,
-    history7d: periodByKey.get("7d") || oldTrend.history7d,
-    history30d: periodByKey.get("30d") || oldTrend.history30d,
+    status: retainedStatus,
+    history24h: periodByKey.get("24h") || freshTrend?.history24h,
+    history1d: legacyDay || freshTrend?.history1d,
+    history7d: periodByKey.get("7d") || freshTrend?.history7d,
+    history30d: periodByKey.get("30d") || freshTrend?.history30d,
     periods,
   };
-  return {
+  const usesStaleData = periods.some((period) => period.status === "stale") || legacyDay?.status === "stale";
+  if (!usesStaleData) return normalizeZaiFeedFreshness({ ...fresh, usageTrend }, now);
+  return normalizeZaiFeedFreshness({
     ...lastGood,
     ...fresh,
-    status: "stale",
+    status: retainedStatus === "stale" ? "stale" : "partial",
     staleAt,
     detail: `${fresh?.detail || "Z.ai 接口暂不可用"} · 正在显示最近成功数据`,
     usageTrend,
-  };
+  }, now);
+}
+
+function hasUsableZaiData(feed) {
+  return (feed?.usageTrend?.periods || []).some((period) => ["ok", "stale"].includes(period?.status));
+}
+
+function storedZaiSnapshot(fingerprint) {
+  const memory = zaiLastGoodByAccount.get(fingerprint);
+  if (memory) return memory;
+  const persisted = state.glmSnapshots?.[fingerprint];
+  if (persisted && typeof persisted === "object") {
+    zaiLastGoodByAccount.set(fingerprint, persisted);
+    return persisted;
+  }
+  return null;
+}
+
+function persistZaiSnapshot(fingerprint, feed) {
+  if (!hasUsableZaiData(feed)) return;
+  const lastSuccessfulAt = latestZaiSuccessfulAt(feed) || feed.capturedAt || new Date().toISOString();
+  const snapshot = { ...feed, capturedAt: lastSuccessfulAt, lastSuccessfulAt };
+  zaiLastGoodByAccount.set(fingerprint, snapshot);
+  state.glmSnapshots = { ...(state.glmSnapshots || {}), [fingerprint]: snapshot };
+  state.glmActiveFingerprint = fingerprint;
+  saveState();
 }
 
 async function refreshZaiQuota(accounts, fingerprint) {
   const activeRefresh = quotaRefreshPromises.get(fingerprint);
   if (activeRefresh) return activeRefresh;
   const refresh = (async () => {
+    const lastAttemptAt = new Date().toISOString();
     let fresh;
     try {
       fresh = await fetchZaiQuota(accounts);
     } catch {
       fresh = zaiQuotaUnavailable("read");
     }
-    if (fresh?.status === "ok") {
-      zaiLastGoodByAccount.set(fingerprint, { ...fresh, capturedAt: new Date().toISOString() });
+    fresh = { ...fresh, lastAttemptAt };
+    const lastGood = storedZaiSnapshot(fingerprint);
+    let retained = retainLastGoodZaiQuota(fresh, lastGood, lastAttemptAt);
+    if (hasUsableZaiData(fresh)) {
+      const lastSuccessfulAt = latestZaiSuccessfulAt(fresh) || lastAttemptAt;
+      retained = { ...retained, capturedAt: lastSuccessfulAt, lastSuccessfulAt };
     }
-    const retained = retainLastGoodZaiQuota(fresh, zaiLastGoodByAccount.get(fingerprint));
+    retained = normalizeZaiFeedFreshness(retained);
+    if (hasUsableZaiData(retained)) persistZaiSnapshot(fingerprint, retained);
     quotaCache = { at: Date.now(), fingerprint, zai: retained };
     return retained;
   })();
@@ -1196,11 +1893,19 @@ async function refreshZaiQuota(accounts, fingerprint) {
 async function cachedZaiQuota() {
   const accounts = enabledZaiAccounts();
   const fingerprint = zaiAccountFingerprint(accounts);
+  zaiRuntime = {
+    fingerprint,
+    source: accounts.length && accounts.every((account) => account.source === "windows-user-env")
+      ? "windows-user-env"
+      : accounts.length
+        ? "direct"
+        : "not-connected",
+  };
   if (quotaCache.zai && quotaCache.fingerprint === fingerprint
     && Date.now() - quotaCache.at < quotaCacheTtl(quotaCache.zai)) {
-    return quotaCache.zai;
+    return normalizeZaiFeedFreshness(quotaCache.zai);
   }
-  const lastGood = zaiLastGoodByAccount.get(fingerprint);
+  const lastGood = storedZaiSnapshot(fingerprint);
   void refreshZaiQuota(accounts, fingerprint);
   if (lastGood) {
     return retainLastGoodZaiQuota(
@@ -1209,6 +1914,36 @@ async function cachedZaiQuota() {
     );
   }
   return zaiQuotaUnavailable("waiting");
+}
+
+function selectZaiQuotaSnapshot(fingerprint, cache = {}, snapshots = {}, now = Date.now()) {
+  if (!fingerprint || fingerprint === "not-connected") return zaiQuotaUnavailable("not-connected");
+  if (cache?.zai && cache.fingerprint === fingerprint) return normalizeZaiFeedFreshness(cache.zai, now);
+  const lastGood = snapshots?.[fingerprint] || null;
+  if (lastGood) {
+    return normalizeZaiFeedFreshness(retainLastGoodZaiQuota(
+      { key: "glm", status: "partial", detail: "正在刷新 Z.ai 数据", usageTrend: emptyZaiUsageTrend("read") },
+      lastGood,
+      new Date(now).toISOString(),
+      now,
+    ), now);
+  }
+  return zaiQuotaUnavailable("waiting");
+}
+
+function peekZaiQuota() {
+  const directAccounts = enabledZaiAccounts({ includeWindowsUserEnv: false });
+  const fingerprint = zaiRuntime.source === "test-state"
+    ? zaiRuntime.fingerprint
+    : directAccounts.length
+      ? zaiAccountFingerprint(directAccounts)
+      : zaiRuntime.source === "windows-user-env"
+        ? zaiRuntime.fingerprint
+        : "not-connected";
+  const snapshots = { ...(state.glmSnapshots || {}) };
+  const memory = zaiLastGoodByAccount.get(fingerprint);
+  if (memory) snapshots[fingerprint] = memory;
+  return selectZaiQuotaSnapshot(fingerprint, quotaCache, snapshots);
 }
 
 function codexQuotaItems(byTool = {}) {
@@ -1272,7 +2007,7 @@ function codexQuotaFromTools(byTool = {}, total = 0) {
 
 async function quotaFeeds(byTool = {}, total = 0) {
   return [
-    await cachedZaiQuota(),
+    peekZaiQuota(),
     codexQuotaFromTools(byTool, total),
   ];
 }
@@ -1324,19 +2059,86 @@ function buildQuotaAudit(byTool = {}, feeds = []) {
   return rows;
 }
 
-function rankedTools(byTool = {}, total = 0) {
-  return Object.entries(byTool)
-    .map(([name, value]) => ({
-      name,
-      value: Number(value || 0),
-      label: toolLabel(name),
-      icon: toolIcon(name),
-      share: total > 0 ? Number(value || 0) / total : 0,
-    }))
-    .sort((a, b) => b.value - a.value);
+function leaderboardTools(byTool = {}) {
+  return toolsFromMap(normalizeToolMap(byTool)).map((tool) => ({
+    name: tool.name,
+    label: tool.label,
+    score: tool.value,
+    scoreLabel: tool.valueLabel,
+    value: tool.value,
+    valueLabel: tool.valueLabel,
+    pct: tool.pct,
+    source: "scys",
+    detail: "SCYS 榜单工具分（包含同账号其他电脑）",
+  }));
 }
 
-function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal }) {
+function leaderboardCity(board) {
+  const name = String(board?.myCity || "");
+  const directoryEntry = (board?.cities || []).find((item) => String(item.city) === name) || null;
+  const rank = normalizeRankValue(board?.cityRank);
+  const totalScore = Math.max(0, Number(board?.cityStats?.total || 0));
+  const users = Math.max(0, Number(board?.cityStats?.users || directoryEntry?.count || 0));
+  const available = Boolean(name);
+  return {
+    status: available ? (rank ? (board?.stale ? "stale" : "ok") : "partial") : "unavailable",
+    name,
+    group: String(directoryEntry?.group || ""),
+    rank,
+    rankLabel: rank ? `#${rank}` : "#--",
+    totalScore,
+    totalScoreLabel: totalScore > 0 ? formatCount(totalScore) : "--",
+    users,
+    usersLabel: users > 0 ? String(users) : "--",
+    updatedAt: String(board?.updatedAt || ""),
+    reason: available ? (rank ? "SCYS 城市榜" : "SCYS 未返回当前账号的城市名次") : "SCYS 未返回城市身份",
+  };
+}
+
+function leaderboardProjection(board, { accountConnected = false, boundUserId = "" } = {}) {
+  const own = board?.own || null;
+  const score = Math.max(0, Number(own?.score || 0));
+  const rank = own?.rank ? Number(own.rank) : null;
+  const byTool = normalizeToolMap(own?.byTool || {});
+  return {
+    source: "scys",
+    status: own ? (board?.stale ? "stale" : "ok") : (board?.error || accountConnected ? "unmatched" : "waiting"),
+    board: String(board?.board || "total"),
+    range: String(board?.range || "today"),
+    matched: Boolean(own),
+    updatedAt: String(board?.updatedAt || ""),
+    score,
+    scoreLabel: own ? formatCount(score) : "--",
+    rank,
+    rankLabel: rank ? `#${rank}` : "#--",
+    byTool,
+    tools: leaderboardTools(byTool),
+    previous: board?.previous || null,
+    next: board?.next || null,
+    gapToPrevious: Math.max(0, Number(board?.gapToPrevious || 0)),
+    leadOverNext: Math.max(0, Number(board?.leadOverNext || 0)),
+    city: leaderboardCity(board),
+    cityDirectory: (board?.cities || []).map((item) => ({
+      name: String(item.city || ""),
+      group: String(item.group || ""),
+      members: Math.max(0, Number(item.count || 0)),
+    })).filter((item) => item.name),
+    identity: {
+      status: own ? "matched" : accountConnected ? (boundUserId ? "outside-public-window" : "binding-required") : "not-connected",
+      canBind: Boolean(accountConnected),
+      bound: Boolean(boundUserId),
+      detail: own
+        ? "已绑定当前 SCYS 榜单账号"
+        : boundUserId
+          ? "已绑定账号，但今日公开榜单尚未返回该账号"
+          : accountConnected
+            ? "请选择一次公开榜单账号；后续按 webhook 账号隔离保存"
+            : "请先配置 SCYS webhook",
+    },
+  };
+}
+
+function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal, city }) {
   const matched = Boolean(sync?.leaderboardMatched);
   const scoreLabel = leaderboardTotal > 0 ? formatCount(leaderboardTotal) : "--";
   const distanceLabel = rank === 1 ? "领先下一名" : "距上一名";
@@ -1371,33 +2173,199 @@ function buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTota
         status: matched ? "ok" : "waiting",
       },
       {
-        key: "sync",
-        label: "同步状态",
-        valueLabel: syncValue,
-        detail: syncDetail,
-        status: sync?.uploaded || matched ? "ok" : "waiting",
+        key: "city-rank",
+        label: city?.name ? `${city.name}城市榜` : "城市榜",
+        valueLabel: city?.rankLabel || "#--",
+        detail: city?.reason || "SCYS 未返回城市身份",
+        status: city?.status || "unavailable",
       },
     ],
   };
 }
 
-function sameToolBreakdown(entryTools = {}, summaryTools = {}) {
-  const entry = normalizeToolMap(entryTools);
-  const summary = normalizeToolMap(summaryTools);
-  const keys = Object.keys(summary);
-  if (!keys.length) return false;
-  return keys.every((key) => Number(entry[key] || 0) === Number(summary[key] || 0));
+function leaderboardEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const userId = String(entry.userId || "").slice(0, 200);
+  if (!userId) return null;
+  return {
+    userId,
+    name: String(entry.name || "").slice(0, 120),
+    city: String(entry.city || "").slice(0, 80),
+    rank: Number(entry.rank || 0) || null,
+    score: Math.max(0, Number(entry.score || 0)),
+    byTool: normalizeToolMap(entry.byTool || {}),
+  };
 }
 
-function findOwnEntry(entries, summary) {
-  if (state.userId) {
-    const byUser = entries.find((entry) => String(entry.userId) === String(state.userId));
-    if (byUser) return byUser;
+function selectOwnEntry(entries, {
+  claimedUserId = "",
+  storedUserId = "",
+} = {}) {
+  const normalizedEntries = Array.isArray(entries) ? entries : [];
+  const byId = (userId) => userId
+    ? normalizedEntries.find((entry) => String(entry.userId) === String(userId)) || null
+    : null;
+  const claimed = byId(claimedUserId);
+  if (claimed) return claimed;
+  const stored = byId(storedUserId);
+  if (stored) return stored;
+  return null;
+}
+
+function findOwnEntry(entries, claimedUserId = "") {
+  return selectOwnEntry(entries, {
+    claimedUserId,
+    storedUserId: state.userId,
+  });
+}
+
+function activeScysAccountKey() {
+  return String(state.accountKey || accountKeyForUpstreamUrl(proxyRuntime.upstreamUrl || state.upstreamUrl) || "");
+}
+
+function scysRequestIsCurrent(accountKey, generation) {
+  return accountKey === activeScysAccountKey() && generation === scysAccountGeneration;
+}
+
+function transportForActiveAccount() {
+  const accountKey = activeScysAccountKey();
+  const record = state.lastUpload;
+  const transport = record?.upstream;
+  if (!accountKey || !transport || String(record.accountKey || "") !== accountKey) return {};
+  if (String(transport.accountKey || "") !== accountKey) return {};
+  if (transport.operationId && record.operationId && transport.operationId !== record.operationId) return {};
+  return transport;
+}
+
+function currentLeaderboardSnapshot(today = localDateString()) {
+  const board = state.leaderboard;
+  const accountKey = activeScysAccountKey();
+  if (!accountKey || !board || !isSameLocalDate(board.updatedAt, today)) return null;
+  if (String(board.accountKey || "") !== accountKey) return null;
+  return board;
+}
+
+function currentUploadSummary(today = localDateString()) {
+  const record = state.lastUpload;
+  const accountKey = activeScysAccountKey();
+  if (!accountKey || !record?.summary || record.summary.date !== today) return null;
+  if (String(record.accountKey || "") !== accountKey) return null;
+  return record.summary;
+}
+
+function cacheLeaderboardCandidates(
+  entries,
+  metadata = null,
+  expectedAccountKey = activeScysAccountKey(),
+  capturedAt = Date.now(),
+) {
+  const accountKey = activeScysAccountKey();
+  if (!accountKey || accountKey !== expectedAccountKey || !Array.isArray(entries)) return false;
+  leaderboardCandidateCache = {
+    at: capturedAt,
+    accountKey,
+    metadata,
+    entries: entries.slice(0, 500),
+  };
+  return true;
+}
+
+function leaderboardCandidateView() {
+  const accountKey = activeScysAccountKey();
+  const valid = Boolean(accountKey && leaderboardCandidateCache.accountKey === accountKey);
+  const entries = valid ? leaderboardCandidateCache.entries : [];
+  return {
+    updatedAt: valid && leaderboardCandidateCache.at ? new Date(leaderboardCandidateCache.at).toISOString() : "",
+    selectedUserId: String(state.userId || ""),
+    entries: entries.map((entry) => ({
+      userId: entry.userId,
+      name: entry.name || "未命名账号",
+      rank: entry.rank,
+      rankLabel: entry.rank ? `#${entry.rank}` : "#--",
+      score: entry.score,
+      scoreLabel: formatCount(entry.score),
+      city: entry.city || "",
+    })),
+  };
+}
+
+function bindLeaderboardCandidate(userId) {
+  const accountKey = activeScysAccountKey();
+  if (!accountKey) return { ok: false, status: 409, error: "SCYS webhook 尚未配置" };
+  if (leaderboardCandidateCache.accountKey !== accountKey) {
+    return { ok: false, status: 409, error: "请先重新加载当前账号的公开榜单" };
   }
-  return entries.find((entry) =>
-    Number(entry.score || 0) === Number(summary.total || 0)
-    && sameToolBreakdown(entry.byTool || {}, summary.byTool || {})
-  );
+  if (Date.now() - leaderboardCandidateCache.at > LEADERBOARD_CANDIDATE_TTL_MS) {
+    return { ok: false, status: 409, error: "公开榜单账号列表已过期，请刷新后重试" };
+  }
+  const own = leaderboardCandidateCache.entries.find((entry) => entry.userId === String(userId || ""));
+  if (!own) return { ok: false, status: 400, error: "所选账号不在当前公开榜单中" };
+
+  const entries = leaderboardCandidateCache.entries;
+  const index = entries.findIndex((entry) => entry.userId === own.userId);
+  const previous = own.rank > 1
+    ? entries.find((entry) => entry.rank === own.rank - 1) || entries[index - 1] || null
+    : null;
+  const next = entries.find((entry) => entry.rank === own.rank + 1) || entries[index + 1] || null;
+  const metadata = leaderboardCandidateCache.metadata || {};
+  scysAccountGeneration += 1;
+  leaderboardAutoRefresh = { at: 0, promise: null };
+  state.userId = own.userId;
+  state.leaderboard = {
+    updatedAt: new Date().toISOString(),
+    accountKey,
+    ...metadata,
+    publicDataFresh: true,
+    myCity: own.city || metadata.myCity || "",
+    cityRank: null,
+    cityStats: null,
+    entriesCount: entries.length,
+    leaderboardMatched: true,
+    own,
+    previous,
+    next,
+    gapToPrevious: previous ? Math.max(0, Number(previous.score || 0) - Number(own.score || 0) + 1) : 0,
+    leadOverNext: next ? Math.max(0, Number(own.score || 0) - Number(next.score || 0)) : 0,
+    rankDelta: 0,
+  };
+  state.leaderboardNeedsRefresh = true;
+  leaderboardAutoRefresh.at = 0;
+  saveState();
+  return { ok: true, status: 200, board: state.leaderboard };
+}
+
+function normalizeRankValue(value) {
+  if (Number.isFinite(Number(value)) && Number(value) > 0) return Number(value);
+  if (value && typeof value === "object" && Number(value.rank) > 0) return Number(value.rank);
+  return null;
+}
+
+function normalizeLeaderboardMetadata(json = {}) {
+  const cities = Array.isArray(json.cities) ? json.cities.slice(0, 500).map((item) => ({
+    city: String(item?.city || "").slice(0, 80),
+    count: Math.max(0, Number(item?.count || 0)),
+    group: String(item?.group || "").slice(0, 80),
+  })).filter((item) => item.city) : [];
+  const groups = Array.isArray(json.groups) ? json.groups.slice(0, 100).map((item) => ({
+    group: String(item?.group || "").slice(0, 80),
+    count: Math.max(0, Number(item?.count || 0)),
+    cities: Array.isArray(item?.cities) ? item.cities.map((city) => String(city || "").slice(0, 80)).filter(Boolean) : [],
+  })).filter((item) => item.group) : [];
+  const cityStats = json.cityStats && typeof json.cityStats === "object" ? {
+    total: Math.max(0, Number(json.cityStats.total || 0)),
+    users: Math.max(0, Number(json.cityStats.users || 0)),
+  } : null;
+  return {
+    board: String(json.board || "total"),
+    range: String(json.range || "today"),
+    city: String(json.city || "").slice(0, 80),
+    myCity: String(json.myCity || "").slice(0, 80),
+    myRank: normalizeRankValue(json.myRank),
+    cityStats,
+    cities,
+    groups,
+    totalMembers: Math.max(0, Number(json.totalMembers || 0)),
+  };
 }
 
 function sleep(ms) {
@@ -1410,11 +2378,34 @@ function withCacheBust(targetUrl) {
   return url.toString();
 }
 
-function leaderboardBehindUsage(board, usageSummary) {
-  if (!board?.own || !usageSummary) return false;
-  const usageTotal = Number(usageSummary.total || 0);
-  const score = Number(board.own.score || 0);
-  return usageTotal > 0 && score > 0 && score < usageTotal;
+async function refreshLeaderboardCandidates({ force = false, timeoutMs = 8000 } = {}) {
+  const accountKey = activeScysAccountKey();
+  const generation = scysAccountGeneration;
+  if (!accountKey) return { ok: false, error: "SCYS webhook 尚未配置", ...leaderboardCandidateView() };
+  if (
+    !force
+    && leaderboardCandidateCache.accountKey === accountKey
+    && Date.now() - leaderboardCandidateCache.at < LEADERBOARD_CANDIDATE_TTL_MS
+  ) return { ok: true, ...leaderboardCandidateView() };
+
+  const result = await requestTextWithRetry("GET", withCacheBust(LEADERBOARD_ENDPOINT), "", {
+    accept: "application/json",
+    "cache-control": "no-cache",
+    pragma: "no-cache",
+  }, timeoutMs, 1);
+  if (!scysRequestIsCurrent(accountKey, generation)) {
+    return { ok: false, error: "SCYS 账号已切换，请重新加载榜单", ...leaderboardCandidateView() };
+  }
+  if (!result.ok || !Array.isArray(result.json?.entries)) {
+    return {
+      ok: false,
+      error: result.status ? `SCYS 排行榜返回 HTTP ${result.status}` : "SCYS 排行榜暂不可用",
+      ...leaderboardCandidateView(),
+    };
+  }
+  const entries = result.json.entries.map(leaderboardEntry).filter(Boolean);
+  cacheLeaderboardCandidates(entries, normalizeLeaderboardMetadata(result.json), accountKey);
+  return { ok: true, ...leaderboardCandidateView() };
 }
 
 function leaderboardOlderThanLastUpload(board) {
@@ -1425,39 +2416,80 @@ function leaderboardOlderThanLastUpload(board) {
 
 function shouldRefreshLeaderboardForUpload(uploadSummary, board, today) {
   if (!uploadSummary || uploadSummary.date !== today || Number(uploadSummary.total || 0) <= 0) return false;
-  if (!state.lastUpload?.upstream?.ok) return false;
+  if (!transportForActiveAccount().ok) return false;
   if (!board?.own || !board?.leaderboardMatched) return true;
-  return leaderboardBehindUsage(board, uploadSummary) || leaderboardOlderThanLastUpload(board);
+  return leaderboardOlderThanLastUpload(board);
 }
 
 function retainLeaderboardSnapshot(fresh, previous, today = localDateString()) {
-  if (fresh?.own || !previous?.own || !isSameLocalDate(previous.updatedAt, today)) return fresh;
+  if (fresh?.accountKey && previous?.accountKey && fresh.accountKey !== previous.accountKey) return fresh;
+  if (fresh?.own || !previous || !isSameLocalDate(previous.updatedAt, today)) return fresh;
+  const publicDataFresh = Boolean(fresh?.publicDataFresh);
+  const freshCity = String(fresh?.myCity || fresh?.city || "");
+  const previousCity = String(previous?.myCity || previous?.city || "");
+  const mayReusePreviousCity = !freshCity || freshCity === previousCity;
+  const publicSnapshot = {
+    ...fresh,
+    cities: publicDataFresh ? (fresh?.cities || []) : (previous?.cities || []),
+    groups: publicDataFresh ? (fresh?.groups || []) : (previous?.groups || []),
+    totalMembers: publicDataFresh
+      ? Math.max(0, Number(fresh?.totalMembers || 0))
+      : Math.max(0, Number(previous?.totalMembers || 0)),
+  };
+  if (!previous?.own) {
+    return {
+      ...publicSnapshot,
+      stale: !publicDataFresh,
+      error: fresh?.error || (!publicDataFresh ? "排行榜刷新失败，保留最近成功的城市目录" : ""),
+    };
+  }
   return {
-    ...previous,
+    ...publicSnapshot,
+    own: previous.own,
+    previous: previous.previous,
+    next: previous.next,
+    gapToPrevious: previous.gapToPrevious,
+    leadOverNext: previous.leadOverNext,
+    rankDelta: previous.rankDelta,
+    myCity: fresh?.myCity || (mayReusePreviousCity ? previous.myCity : "") || "",
+    city: fresh?.city || (mayReusePreviousCity ? previous.city : "") || "",
+    cityStats: fresh?.cityStats || (mayReusePreviousCity ? previous.cityStats : null) || null,
+    cityRank: fresh?.cityRank || (mayReusePreviousCity ? previous.cityRank : null) || null,
     updatedAt: fresh?.updatedAt || new Date().toISOString(),
     entriesCount: Number(fresh?.entriesCount || previous.entriesCount || 0),
     stale: true,
-    error: fresh?.error || "排行榜刷新暂未返回当前账号，保留最近成功的多端明细",
+    error: fresh?.error || "排行榜刷新暂未返回当前账号，保留最近成功的榜单快照",
   };
 }
 
 async function refreshLeaderboard(summary, previousRank = null, options = {}) {
-  const baseEndpoint = "https://scys.com/tokenrank/api/subapp/leaderboard?board=total&range=today&limit=500";
+  const baseEndpoint = LEADERBOARD_ENDPOINT;
+  const accountKey = activeScysAccountKey();
+  const generation = scysAccountGeneration;
+  if (!accountKey) return state.leaderboard || { leaderboardMatched: false, error: "SCYS webhook 尚未配置" };
   const outerAttempts = Number(options.outerAttempts || 4);
   const requestAttempts = Number(options.requestAttempts || 2);
   const timeoutMs = Number(options.timeoutMs || 15000);
+  const request = typeof options.request === "function" ? options.request : requestTextWithRetry;
   let lastResult = null;
 
   for (let attempt = 0; attempt < outerAttempts; attempt += 1) {
     const endpoint = withCacheBust(baseEndpoint);
-    const result = await requestTextWithRetry("GET", endpoint, "", {
+    const result = await request("GET", endpoint, "", {
       accept: "application/json",
       "cache-control": "no-cache",
       pragma: "no-cache",
     }, timeoutMs, requestAttempts);
+    if (!scysRequestIsCurrent(accountKey, generation)) return state.leaderboard || { leaderboardMatched: false, error: "SCYS 账号或绑定已切换" };
     lastResult = result;
-    const entries = Array.isArray(result.json?.entries) ? result.json.entries : [];
-    const own = findOwnEntry(entries, summary);
+    const rawEntries = Array.isArray(result.json?.entries) ? result.json.entries : [];
+    const entries = rawEntries.map(leaderboardEntry).filter(Boolean);
+    const metadata = normalizeLeaderboardMetadata(result.json || {});
+    if (result.ok && Array.isArray(result.json?.entries)) cacheLeaderboardCandidates(entries, metadata, accountKey);
+    const claimedUserId = result.json?.myRank && typeof result.json.myRank === "object"
+      ? result.json.myRank.userId
+      : "";
+    const own = findOwnEntry(entries, claimedUserId);
 
     if (own) {
       const index = entries.findIndex((entry) => entry.rank === own.rank || entry.userId === own.userId);
@@ -1469,11 +2501,40 @@ async function refreshLeaderboard(summary, previousRank = null, options = {}) {
       const leadOverNext = next ? Math.max(0, Number(own.score || 0) - Number(next.score || 0)) : 0;
       const rankDelta = typeof previousRank === "number" ? previousRank - Number(own.rank || previousRank) : 0;
 
+      let cityRank = null;
+      let cityStats = metadata.cityStats;
+      const myCity = metadata.myCity || own.city || "";
+      if (myCity) {
+        const cityUrl = new URL(baseEndpoint);
+        cityUrl.searchParams.set("city", myCity);
+        const cityResult = await request("GET", withCacheBust(cityUrl.toString()), "", {
+          accept: "application/json",
+          "cache-control": "no-cache",
+        }, timeoutMs, 1);
+        if (cityResult.ok) {
+          const cityEntries = (Array.isArray(cityResult.json?.entries) ? cityResult.json.entries : [])
+            .map(leaderboardEntry).filter(Boolean);
+          const cityOwn = cityEntries.find((entry) => String(entry.userId) === String(own.userId));
+          const cityMetadata = normalizeLeaderboardMetadata(cityResult.json || {});
+          cityRank = cityOwn?.rank || null;
+          cityStats = cityMetadata.cityStats || cityStats;
+        }
+      }
+
+      if (!scysRequestIsCurrent(accountKey, generation)) {
+        return state.leaderboard || { leaderboardMatched: false, error: "SCYS 账号或绑定已切换" };
+      }
+
       state.userId = own.userId;
+      state.leaderboardNeedsRefresh = false;
       state.leaderboard = {
         updatedAt: new Date().toISOString(),
-        board: "total",
-        range: "today",
+        accountKey,
+        ...metadata,
+        publicDataFresh: true,
+        myCity,
+        cityRank,
+        cityStats,
         entriesCount: entries.length,
         leaderboardMatched: true,
         own,
@@ -1492,20 +2553,24 @@ async function refreshLeaderboard(summary, previousRank = null, options = {}) {
 
   const failedSnapshot = {
     updatedAt: new Date().toISOString(),
-    board: "total",
-    range: "today",
+    accountKey,
+    ...normalizeLeaderboardMetadata(lastResult?.json || {}),
+    publicDataFresh: Boolean(lastResult?.ok && Array.isArray(lastResult?.json?.entries)),
     entriesCount: Array.isArray(lastResult?.json?.entries) ? lastResult.json.entries.length : 0,
     leaderboardMatched: false,
     error: lastResult?.error || "Current upload was not found in leaderboard yet",
   };
+  if (!scysRequestIsCurrent(accountKey, generation)) {
+    return state.leaderboard || { leaderboardMatched: false, error: "SCYS 账号或绑定已切换" };
+  }
   state.leaderboard = retainLeaderboardSnapshot(failedSnapshot, state.leaderboard);
   saveState();
   return state.leaderboard;
 }
 
 async function refreshLeaderboardIfStale(today, { force = false } = {}) {
-  const uploadSummary = state.lastUpload?.summary || null;
-  const board = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
+  const uploadSummary = currentUploadSummary(today);
+  const board = currentLeaderboardSnapshot(today);
   if (!force && !shouldRefreshLeaderboardForUpload(uploadSummary, board, today)) return null;
   if (!force && Date.now() - leaderboardAutoRefresh.at < LEADERBOARD_AUTO_REFRESH_INTERVAL_MS) return null;
   if (leaderboardAutoRefresh.promise) return leaderboardAutoRefresh.promise;
@@ -1513,16 +2578,17 @@ async function refreshLeaderboardIfStale(today, { force = false } = {}) {
   leaderboardAutoRefresh.at = Date.now();
   const previousRank = state.leaderboard?.own?.rank ? Number(state.leaderboard.own.rank) : null;
   const options = force ? {} : { outerAttempts: 1, requestAttempts: 1, timeoutMs: 8000 };
-  leaderboardAutoRefresh.promise = refreshLeaderboard(uploadSummary, previousRank, options)
+  const tracked = refreshLeaderboard(uploadSummary, previousRank, options)
     .finally(() => {
-      leaderboardAutoRefresh.promise = null;
+      if (leaderboardAutoRefresh.promise === tracked) leaderboardAutoRefresh.promise = null;
     });
-  return leaderboardAutoRefresh.promise;
+  leaderboardAutoRefresh.promise = tracked;
+  return tracked;
 }
 
 function buildSyncStatus(uploadSummary, board) {
-  const upstream = state.lastUpload?.upstream || {};
-  const accepted = upstream.json?.accepted ?? null;
+  const upstream = transportForActiveAccount();
+  const accepted = upstream.accepted ?? upstream.json?.accepted ?? null;
   const uploaded = Boolean(upstream.ok);
   const leaderboardMatched = Boolean(board?.own || board?.leaderboardMatched);
   const entriesCount = Number(board?.entriesCount || 0);
@@ -1620,21 +2686,25 @@ async function openTokenPreviewSnapshot(preferredDate = "") {
       date,
       error: (result.stderr || result.stdout || result.message || "OpenToken preview failed").trim(),
       summary: null,
-      payload: null,
     };
     previewCache = { at: Date.now(), date, snapshot };
     return snapshot;
   }
 
   const payload = safeJson(result.stdout);
+  if (!validUsagePayload(payload)) {
+    const snapshot = { ok: false, date, error: "OpenToken preview returned malformed JSON", summary: null };
+    previewCache = { at: Date.now(), date, snapshot };
+    return snapshot;
+  }
   const rows = rowsFromPayload(payload);
   const summary = summarizeRows(rows, date);
+  const persisted = persistLocalUsageRows(rows, { date, source: "preview", replace: true });
   const snapshot = {
-    ok: summary.rowCount > 0,
+    ok: true,
     date,
-    error: summary.rowCount > 0 ? "" : "OpenToken preview returned no rows",
-    summary,
-    payload,
+    error: "",
+    summary: persisted?.date === date ? persisted.summary : summary,
   };
   previewCache = { at: Date.now(), date, snapshot };
   return snapshot;
@@ -1735,6 +2805,7 @@ async function openTokenClaudeCodeUsage(preferredDate = "") {
     detail: claudeValue > 0 ? `已读取 ${formatCount(claudeValue)}` : "今天暂无 Claude Code Token",
   };
   claudeCodeLastGoodByDate.set(date, claudeCodeCache);
+  persistLocalUsageRows(rows, { date, source: "claude-preview" });
   return claudeCodeCache;
 }
 
@@ -1759,123 +2830,108 @@ function augmentClaudeCodeRows(date) {
 
 async function buildSummary() {
   const today = localDateString();
-  const rawUploadSummary = state.lastUpload?.summary || null;
-  const uploadSummary = rawUploadSummary?.date === today ? rawUploadSummary : null;
-  const uploadRowsSummary = uploadSummary
-    ? summarizeRows(rowsFromPayload(state.lastUpload?.payload), uploadSummary.date)
-    : null;
-  const rawBoard = isSameLocalDate(state.leaderboard?.updatedAt, today) ? state.leaderboard : null;
-  // /summary 是 GUI 的热路径：绝不能等待全量 Codex 扫描。先返回已知缓存，扫描在
-  // 后台并行进行；下一次轮询会拿到新快照，面板不会因单次扫描卡死十几秒。
-  // 榜单已匹配时可以跳过昂贵的全工具扫描，但 Claude Code 单工具扫描仍必须执行；
-  // 否则服务一重启，内存缓存为空且 rawBoard.own 存在，Claude Code 会永久从 GUI 消失。
-  refreshClaudeCodeInBackground(today);
-  if (!rawBoard?.own) refreshUsageInBackground(today);
-  const previewSnapshot = previewCache.date === today ? previewCache.snapshot : null;
-  const usageSummary = previewSnapshot?.summary?.rowCount
-    ? previewSnapshot.summary
-    : uploadRowsSummary?.rowCount
-      ? uploadRowsSummary
-      : uploadSummary;
-  const usageSource = previewSnapshot?.summary?.rowCount
-    ? "local-preview"
-    : uploadRowsSummary?.rowCount
-      ? "upload"
-      : uploadSummary
-        ? "upload"
-        : "waiting";
-  const boardIsBehind = leaderboardBehindUsage(rawBoard, usageSummary || uploadSummary);
-  const board = boardIsBehind
-    ? {
-        ...rawBoard,
-        stale: true,
-        error: "已上报数据；公开榜单仍在重新计算，榜单分和排名保留为上次公开结果",
-      }
-    : rawBoard;
-  const own = board?.own || null;
-  const previous = board?.previous || null;
-  const next = board?.next || null;
-  const usageByTool = usageSummary?.byTool || {};
-  const normalizedByTool = normalizeToolMap(
-    usageSummary?.normalizedByTool || {},
-  );
-  const byTool = normalizeToolMap(usageByTool);
-  const leaderboardByTool = normalizeToolMap(own?.byTool || {});
-  const leaderboardTotal = Number(own?.score || 0);
-  const hasLeaderboardScore = Boolean(own && leaderboardTotal > 0);
-  const uploadRawTotal = Number(usageSummary?.total || uploadSummary?.total || 0);
-  // 主数始终跟随已匹配的公开榜单分（与 scys 网页同口径）；
-  // 不再用 boardIsBehind 闸门——raw 与榜单分口径不同源会让比较恒真、主数钉死在 raw。
-  const useLeaderboardForMain = hasLeaderboardScore;
-  // 本机与榜单按工具逐项合并：同一工具取较大值（避免多端重复相加，也避免榜单延迟
-  // 把本机新值压低），榜单独有工具则补入 GUI，供多台电脑共用同一账号时查看。
-  const localDisplayByTool = { ...byTool };
-  const leaderboardDisplayByTool = { ...leaderboardByTool };
-  if (!Object.keys(localDisplayByTool).length && !Object.keys(leaderboardDisplayByTool).length) {
-    if (uploadRawTotal > 0) localDisplayByTool.unknown = uploadRawTotal;
-    else if (leaderboardTotal > 0) leaderboardDisplayByTool.unknown = leaderboardTotal;
-  }
-  // opentoken upload 在本机常因 codex 海量日志全量扫描超时，导致上传 payload 与公开榜单
-  // own.byTool 里的 claude-code 不可靠（缺失或偏小）。这里始终用秒级单工具全量 preview
-  // 的 claude-code 值参与同一逐工具 max 合并，不能用较小的本机扫描覆盖多端榜单值。
+  const uploadSummary = currentUploadSummary(today);
+  const localSnapshot = state.localUsage?.date === today ? state.localUsage : null;
+  const usageSummary = localSnapshot?.summary || uploadSummary || null;
+  const board = currentLeaderboardSnapshot(today);
+  const leaderboard = leaderboardProjection(board, {
+    accountConnected: Boolean(activeScysAccountKey()),
+    boundUserId: String(state.userId || ""),
+  });
+  const localByTool = normalizeToolMap(usageSummary?.byTool || {});
+  const normalizedByTool = normalizeToolMap(usageSummary?.normalizedByTool || {});
   const claudeByTool = claudeCodeCache.date === today ? claudeCodeCache : null;
-  if (claudeByTool && claudeByTool.claudeValue > 0) {
-    localDisplayByTool["claude-code"] = Math.max(
-      Number(localDisplayByTool["claude-code"] || 0),
+  if (claudeByTool?.claudeValue > 0) {
+    localByTool["claude-code"] = Math.max(
+      Number(localByTool["claude-code"] || 0),
       Number(claudeByTool.claudeValue || 0),
     );
   }
-  const mergedUsage = mergeKnownToolUsage(localDisplayByTool, leaderboardDisplayByTool);
-  const displayByTool = mergedUsage.byTool;
-  const displayNormalizedByTool = Object.fromEntries(
-    Object.entries(normalizedByTool).filter(([name]) => mergedUsage.sourceByTool[name] !== "leaderboard"),
-  );
-  const rank = own ? Number(own.rank) : null;
-  const gap = Number(board?.gapToPrevious || 0);
-  const lead = Number(board?.leadOverNext || 0);
-  const quotas = await quotaFeeds(displayByTool, useLeaderboardForMain ? leaderboardTotal : uploadRawTotal || leaderboardTotal);
-  const trends = usageTrends(quotas);
-  const actualUsage = actualUsageSummary(displayByTool, displayNormalizedByTool);
-  // “实际消耗”是逐工具去重后的已知多端 Token，工具行之和与主数保持一致；排行榜
-  // 总分仍单独返回用于排名，不再拿一个来源整体覆盖另一个来源。
+  if (!Object.keys(localByTool).length && Number(usageSummary?.total || 0) > 0) {
+    localByTool.unknown = Number(usageSummary.total);
+  }
+  const actualUsage = actualUsageSummary(localByTool, normalizedByTool);
   const actualTotal = Number(actualUsage.total || 0);
+  const overallStatus = localSnapshot
+    ? (localSnapshot.completeness === "full" ? "ok" : "partial")
+    : claudeByTool?.status === "ok" || usageSummary
+      ? "partial"
+      : "waiting";
+  const overallUsage = {
+    scope: "local",
+    status: overallStatus,
+    date: today,
+    source: String(localSnapshot?.source || (usageSummary ? "legacy-upload-observed" : (claudeByTool ? "claude-preview" : "waiting"))),
+    completeness: String(localSnapshot?.completeness || (usageSummary ? "observed" : "waiting")),
+    revision: Number(localSnapshot?.revision || 0),
+    updatedAt: String(localSnapshot?.updatedAt || state.lastUpload?.capturedAt || ""),
+    total: actualTotal,
+    totalLabel: overallStatus === "waiting" ? "--" : formatCount(actualTotal),
+    byTool: localByTool,
+    tools: actualUsage.tools.length ? actualUsage.tools : toolsFromUsageMaps(localByTool, normalizedByTool),
+  };
+  const rank = leaderboard.rank;
+  const previous = leaderboard.previous;
+  const next = leaderboard.next;
+  const gap = leaderboard.gapToPrevious;
+  const lead = leaderboard.leadOverNext;
+  const leaderboardTotal = leaderboard.score;
+  const hasLeaderboardScore = leaderboard.matched;
+  const quotas = await quotaFeeds(localByTool, actualTotal);
+  const trends = usageTrends(quotas);
   const total = actualTotal;
-  const rawTools = actualUsage.tools.length
-    ? actualUsage.tools
-    : toolsFromUsageMaps(displayByTool, displayNormalizedByTool);
-  const tools = annotateUsageToolSources(rawTools, mergedUsage.sourceByTool);
-  const quotaAudit = buildQuotaAudit(displayByTool, quotas);
+  const tools = overallUsage.tools;
+  const quotaAudit = buildQuotaAudit(localByTool, quotas);
   const sync = buildSyncStatus(uploadSummary, board);
-  const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal });
+  sync.manualUpload = manualUploadView();
+  const rankFacts = buildRankFacts({ rank, previous, next, gap, lead, sync, leaderboardTotal, city: leaderboard.city });
   const rankProgressPct = previous?.score
     ? Math.max(4, Math.min(100, Math.round((leaderboardTotal / Number(previous.score || 1)) * 100)))
     : rank === 1
       ? 100
       : 4;
+  const glmFeed = quotas.find((feed) => feed?.key === "glm") || zaiQuotaUnavailable("waiting");
+  const glm = {
+    source: "zai",
+    status: glmFeed.status || trends.glm.status,
+    revision: Number(quotaCache.at || Date.parse(glmFeed.capturedAt || "") || 0),
+    updatedAt: String(glmFeed.lastSuccessfulAt || glmFeed.capturedAt || ""),
+    lastSuccessfulAt: String(glmFeed.lastSuccessfulAt || glmFeed.capturedAt || ""),
+    lastAttemptAt: String(glmFeed.lastAttemptAt || (quotaCache.at ? new Date(quotaCache.at).toISOString() : "")),
+    staleAt: String(glmFeed.staleAt || ""),
+    expiredAt: String(glmFeed.expiredAt || ""),
+    quota: glmFeed,
+    trends: trends.glm,
+  };
 
   return {
     ok: true,
-    waiting: !uploadSummary && !usageSummary?.rowCount && !hasLeaderboardScore && !claudeByTool?.claudeValue,
-    source: own ? "leaderboard" : (usageSummary?.rowCount ? usageSource : (claudeByTool?.claudeValue ? "claude-preview" : usageSource)),
+    protocolVersion: API_PROTOCOL_VERSION,
+    revision: Math.max(Number(overallUsage.revision || 0), Number(glm.revision || 0), Date.parse(leaderboard.updatedAt || "") || 0),
+    waiting: overallStatus === "waiting" && !hasLeaderboardScore,
+    source: overallUsage.source,
     sync,
     syncLabel: sync.label,
     leaderboardMatched: sync.leaderboardMatched,
-    capturedAt: state.lastUpload?.capturedAt || "",
+    capturedAt: overallUsage.updatedAt,
     leaderboardUpdatedAt: board?.updatedAt || "",
-    date: usageSummary?.date || uploadSummary?.date || (claudeByTool?.claudeValue || hasLeaderboardScore ? today : ""),
+    date: overallStatus !== "waiting" || hasLeaderboardScore ? today : "",
     total,
-    totalLabel: usageSummary || uploadSummary || claudeByTool?.claudeValue || hasLeaderboardScore ? formatCount(total) : "--",
+    totalLabel: overallUsage.totalLabel,
     actualTotal,
-    actualTotalLabel: usageSummary || uploadSummary || claudeByTool?.claudeValue || hasLeaderboardScore ? formatCount(actualTotal || total) : "--",
-    usageScope: hasLeaderboardScore || Object.keys(leaderboardByTool).length ? "multi-device" : "local",
-    usageScopeLabel: hasLeaderboardScore || Object.keys(leaderboardByTool).length ? "实际 Token（多端汇总）" : "实际 Token（本机）",
-    localByTool: localDisplayByTool,
-    toolSourceByTool: mergedUsage.sourceByTool,
+    actualTotalLabel: overallUsage.totalLabel,
+    usageScope: "local",
+    usageScopeLabel: "实际 Token（本机）",
+    overallUsage,
+    localByTool,
     leaderboardTotal,
     leaderboardTotalLabel: hasLeaderboardScore ? formatCount(leaderboardTotal) : "--",
-    leaderboardByTool,
+    leaderboardByTool: leaderboard.byTool,
+    leaderboardTools: leaderboard.tools,
+    leaderboardCity: leaderboard.city,
+    leaderboard,
     rank,
-    rankLabel: rank ? `#${rank}` : "#--",
+    rankLabel: leaderboard.rankLabel,
     previousName: previous?.name || "",
     previousScore: Number(previous?.score || 0),
     nextName: next?.name || "",
@@ -1890,13 +2946,14 @@ async function buildSummary() {
     tools,
     quotaFeeds: quotas,
     usageTrends: trends,
+    glm,
     quotaAudit,
     localPreview: {
-      ok: Boolean(previewSnapshot?.ok),
-      date: previewSnapshot?.date || "",
-      error: previewSnapshot?.error || "",
-      rowCount: Number(previewSnapshot?.summary?.rowCount || 0),
-      capturedAt: previewCache.at ? new Date(previewCache.at).toISOString() : "",
+      ok: localSnapshot?.completeness === "full",
+      date: localSnapshot?.date || "",
+      error: String(previewCache.snapshot?.error || ""),
+      rowCount: Number(localSnapshot?.summary?.rowCount || 0),
+      capturedAt: String(localSnapshot?.updatedAt || ""),
     },
     runtime: {
       opentokenBin: OPENTOKEN,
@@ -1908,14 +2965,18 @@ async function buildSummary() {
       claudeCodeDetail: claudeByTool?.detail || "正在读取今天的 Claude Code Token",
     },
     upstream: {
-      accepted: state.lastUpload?.upstream?.json?.accepted ?? null,
-      status: state.lastUpload?.upstream?.status ?? null,
+      accepted: transportForActiveAccount().accepted ?? null,
+      status: transportForActiveAccount().status ?? null,
     },
   };
 }
 
 function accountStatus() {
-  const proxy = ensureProxyConfig();
+  const proxy = proxyRuntime.upstreamUrl ? proxyRuntime : {
+    upstreamUrl: String(state.upstreamUrl || ""),
+    localWebhookUrl: state.upstreamUrl ? localWebhookFor(state.upstreamUrl) : "",
+    proxied: Boolean(state.upstreamUrl),
+  };
   const webhook = proxy.upstreamUrl || "";
   let accountId = "";
   try {
@@ -1934,42 +2995,38 @@ function accountStatus() {
 
 async function handleUploadProxy(req, res, url) {
   const proxy = ensureProxyConfig();
-  const upstreamUrl = proxy.upstreamUrl || `${DEFAULT_UPSTREAM_ORIGIN}${url.pathname}${url.search}`;
+  const upstreamUrl = proxy.upstreamUrl || `${DEFAULT_UPSTREAM_ORIGIN}${url.pathname}`;
+  const accountKey = activeScysAccountKey();
   const redactedPath = redactUploadPath(url.pathname);
-  const bodyBuffer = await readBody(req);
-  const body = bodyBuffer.toString("utf8");
-  const payload = safeJson(body);
-  const summary = summarizeRows(rowsFromPayload(payload));
-  const hasTokenUsage = Boolean(summary.date) && Number(summary.total || 0) > 0;
-  const previousRank = state.leaderboard?.own?.rank ? Number(state.leaderboard.own.rank) : null;
-
-  const uploadRecord = {
-    capturedAt: new Date().toISOString(),
-    path: redactedPath,
-    payload,
-    summary,
-  };
-  if (hasTokenUsage) {
-    state.lastUpload = uploadRecord;
-    previewCache = { at: 0, date: "", snapshot: null };
-  } else {
-    state.lastActivityUpload = uploadRecord;
+  if (!validateScysUpstreamUrl(upstreamUrl)) {
+    return json(res, 502, { ok: false, error: "SCYS upstream is not configured safely" });
   }
-  saveState();
-  logIslandEvent("captured upload payload", {
-    path: redactedPath,
-    date: summary.date,
-    total: summary.total,
-    rowCount: summary.rowCount,
-  });
+  if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] || ""))) {
+    return json(res, 415, { ok: false, error: "application/json required" });
+  }
+  let bodyBuffer;
+  try {
+    bodyBuffer = await readBody(req);
+  } catch (error) {
+    return json(res, /too large/i.test(String(error.message)) ? 413 : 400, { ok: false, error: error.message });
+  }
+  const body = bodyBuffer.toString("utf8");
+  const parsed = safeJson(body);
+  let payload;
+  try {
+    payload = sanitizeUploadPayload(parsed);
+  } catch (error) {
+    logIslandEvent("blocked upload payload", { path: redactedPath, reason: "schema-rejected" });
+    return json(res, 400, { ok: false, error: String(error.message || "Upload payload rejected") });
+  }
+  const payloadKind = Array.isArray(payload.rows) ? "usage-v1" : "activity-v2";
+  const summary = summarizeRows(rowsFromPayload(payload));
+  const hasTokenUsage = Boolean(summary.date) && Array.isArray(payload.rows);
 
-  // opentoken upload 的增量账本常漏掉 claude-opus-5 等 claude-code 模型行，
-  // 导致上传 payload 与公开榜单 own.byTool 不含真实的 claude-code 消耗。
-  // 这里先用秒级 `preview --tool claude-code` 填充本地真实 rows（填充缓存），
-  // 再把 payload 里缺失的 claude-code 行补进去，重新序列化后转发给 scys。
-  let forwardBody = body;
-  if (payload && Array.isArray(payload.rows) && summary.date) {
-    await openTokenClaudeCodeUsage(summary.date).catch(() => null);
+  let forwardPayload = payload;
+  if (Array.isArray(payload.rows) && summary.date) {
+    persistLocalUsageRows(payload.rows, { date: summary.date, source: "upload-observed" });
+    // 仅使用后台已完成的 Claude Code 当前日快照；上传代理不再等待扫描。
     const ccRows = augmentClaudeCodeRows(summary.date);
     if (ccRows.length) {
       const replacedRows = payload.rows.filter((r) =>
@@ -1983,65 +3040,103 @@ async function handleUploadProxy(req, res, url) {
         )),
         ...ccRows,
       ];
-      const augmentedPayload = { ...payload, rows: augmentedRows };
-      forwardBody = JSON.stringify(augmentedPayload);
-      // 用补全后的 rows 重新汇总，使 state.lastUpload.summary 也含 claude-code。
-      const augmentedSummary = summarizeRows(augmentedPayload.rows);
-      summary.date = augmentedSummary.date;
-      summary.total = augmentedSummary.total;
-      summary.rowCount = augmentedSummary.rowCount;
-      summary.byTool = augmentedSummary.byTool;
-      summary.normalizedByTool = augmentedSummary.normalizedByTool;
-      uploadRecord.payload = augmentedPayload;
-      uploadRecord.summary = augmentedSummary;
-      if (hasTokenUsage) state.lastUpload = uploadRecord;
-      saveState();
+      forwardPayload = sanitizeUploadPayload({
+        version: payload.version,
+        device: payload.device,
+        rows: augmentedRows,
+        sessions: payload.sessions,
+      });
       logIslandEvent("augmented upload payload with claude-code rows", {
         addedRows: ccRows.length,
         replacedRows,
-        date: augmentedSummary.date,
-        total: augmentedSummary.total,
-        rowCount: augmentedSummary.rowCount,
+        date: summary.date,
       });
     }
   }
 
-  const upstream = await requestTextWithRetry("POST", upstreamUrl, forwardBody, {
-    "content-type": req.headers["content-type"] || "application/json",
-    "accept": req.headers.accept || "application/json",
-    "user-agent": req.headers["user-agent"] || "opentoken-island/0.1",
-  }, 30000, 4);
+  const forwardBody = JSON.stringify(forwardPayload);
+  const sequence = Math.max(0, Number(state.uploadSequence || 0)) + 1;
+  state.uploadSequence = sequence;
+  const uploadRecord = {
+    operationId: crypto.randomUUID(),
+    accountKey,
+    sequence,
+    capturedAt: new Date().toISOString(),
+    path: redactedPath,
+    payloadHash: crypto.createHash("sha256").update(forwardBody).digest("hex"),
+    payloadKind,
+    summary,
+  };
+  if (hasTokenUsage) {
+    state.lastUpload = uploadRecord;
+    previewCache = { at: 0, date: "", snapshot: null };
+  } else {
+    state.lastActivityUpload = uploadRecord;
+  }
+  saveState();
+  logIslandEvent("captured upload payload", {
+    operationId: uploadRecord.operationId,
+    path: redactedPath,
+    kind: payloadKind,
+    date: summary.date,
+    total: summary.total,
+    rowCount: summary.rowCount,
+  });
 
-  uploadRecord.upstream = {
+  // SCYS 未公布幂等键合同；POST 自动重试可能重复入库，因此一次请求后如实报告结果未知/失败。
+  const upstream = await requestText("POST", upstreamUrl, forwardBody, {
+    "content-type": "application/json",
+    "accept": req.headers.accept || "application/json",
+    "user-agent": "opentoken-island/0.1",
+  }, 30000);
+
+  const transport = {
+    operationId: uploadRecord.operationId,
+    accountKey,
+    sequence,
+    finishedAt: new Date().toISOString(),
     status: upstream.status,
     ok: upstream.ok,
-    body: upstream.body,
-    json: upstream.json,
-    error: upstream.error || "",
+    accepted: upstream.json?.accepted ?? null,
+    errorCode: upstream.ok ? "" : (upstream.status ? `http-${upstream.status}` : "network-error"),
   };
+  const accountStillActive = accountKey && accountKey === activeScysAccountKey();
+  const recordKey = hasTokenUsage ? "lastUpload" : "lastActivityUpload";
+  if (accountStillActive && state[recordKey]?.operationId === uploadRecord.operationId) state[recordKey].upstream = transport;
   saveState();
   logIslandEvent("forwarded upload upstream", {
+    operationId: uploadRecord.operationId,
     status: upstream.status,
     ok: upstream.ok,
     accepted: upstream.json?.accepted ?? null,
   });
 
-  if (upstream.ok && hasTokenUsage) {
-    const leaderboard = await refreshLeaderboard(summary, previousRank);
-    logIslandEvent("refreshed leaderboard", {
-      rank: leaderboard?.own?.rank ?? null,
-      gapToPrevious: leaderboard?.gapToPrevious ?? null,
-      leadOverNext: leaderboard?.leadOverNext ?? null,
-    });
-  }
-
   res.writeHead(upstream.status || 502, {
     "content-type": upstream.headers?.["content-type"] || "application/json; charset=utf-8",
   });
   res.end(upstream.body || JSON.stringify({ status: 1, error: upstream.error || "Upstream upload failed" }));
+
+  if (upstream.ok && hasTokenUsage && accountStillActive) {
+    void refreshLeaderboardIfStale(localDateString(), { force: true })
+      .then((leaderboard) => logIslandEvent("refreshed leaderboard", {
+        rank: leaderboard?.own?.rank ?? null,
+        gapToPrevious: leaderboard?.gapToPrevious ?? null,
+        leadOverNext: leaderboard?.leadOverNext ?? null,
+      }))
+      .catch(() => null);
+  }
 }
 
 async function handleApi(req, res, url) {
+  if (url.pathname === "/api/health") {
+    return json(res, 200, {
+      ok: true,
+      appId: APP_ID,
+      protocolVersion: API_PROTOCOL_VERSION,
+      stateSchemaVersion: STATE_SCHEMA_VERSION,
+    });
+  }
+
   if (url.pathname === "/api/island-event") {
     return json(res, 200, { ok: true, event: currentIslandEvent() });
   }
@@ -2058,18 +3153,17 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/summary") {
-    const today = localDateString();
-    if (url.searchParams.get("refresh") === "1" && state.lastUpload?.summary) {
-      previewCache = { at: 0, date: "", snapshot: null };
-      await refreshLeaderboardIfStale(today, { force: true });
-    } else {
-      await refreshLeaderboardIfStale(today);
-    }
     return json(res, 200, {
       ...await buildSummary(),
       account: accountStatus(),
-      service: await serviceStatus(),
+      service: serviceCache.status,
     });
+  }
+
+  if (url.pathname === "/api/refresh") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
+    void backgroundTick({ force: true });
+    return json(res, 202, { ok: true, async: true, message: "后台刷新已触发" });
   }
 
   if (url.pathname === "/api/upload") {
@@ -2077,11 +3171,49 @@ async function handleApi(req, res, url) {
     ensureProxyConfig();
     // opentoken upload 全量 scan codex 日志常 >120s，同步等待会卡死面板。
     // 改后台触发、立即返回 202，前端靠 summary 轮询看数据更新。
-    triggerBackgroundUpload();
+    const operation = triggerBackgroundUpload();
+    if (operation.blocked) {
+      return json(res, 409, { ok: false, async: false, operation, error: operation.detail });
+    }
     return json(res, 202, {
       ok: true,
       async: true,
-      message: "后台上报已触发，数据将在刷新后更新",
+      operation,
+      message: operation.joined ? "已加入正在进行的上报任务" : "后台上报已触发，可在面板查看真实结果",
+    });
+  }
+
+  if (url.pathname === "/api/leaderboard-candidates") {
+    if (req.method === "GET") {
+      return json(res, 200, { ok: true, connected: Boolean(activeScysAccountKey()), ...leaderboardCandidateView() });
+    }
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "GET or POST required" });
+    const candidates = await refreshLeaderboardCandidates({ force: true });
+    return json(res, candidates.ok ? 200 : (candidates.entries?.length ? 200 : 503), candidates);
+  }
+
+  if (url.pathname === "/api/leaderboard-bind") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
+    if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] || ""))) {
+      return json(res, 415, { ok: false, error: "application/json required" });
+    }
+    let input;
+    try {
+      const body = await readBody(req);
+      input = safeJson(body.toString("utf8"));
+    } catch (error) {
+      return json(res, /too large/i.test(String(error.message)) ? 413 : 400, { ok: false, error: "invalid JSON body" });
+    }
+    if (!plainObject(input) || Object.keys(input).some((key) => key !== "userId")) {
+      return json(res, 400, { ok: false, error: "only userId is allowed" });
+    }
+    const userId = String(input.userId || "");
+    if (!userId || userId.length > 200) return json(res, 400, { ok: false, error: "invalid userId" });
+    const bound = bindLeaderboardCandidate(userId);
+    if (!bound.ok) return json(res, bound.status, { ok: false, error: bound.error });
+    return json(res, 200, {
+      ok: true,
+      leaderboard: leaderboardProjection(bound.board, { accountConnected: true, boundUserId: userId }),
     });
   }
 
@@ -2096,7 +3228,12 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/service") {
-    return json(res, 200, { ok: true, account: accountStatus(), service: await serviceStatus() });
+    if (req.method === "GET") {
+      return json(res, 200, { ok: true, account: accountStatus(), service: serviceCache.status });
+    }
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "GET or POST required" });
+    void refreshServiceStatusInBackground();
+    return json(res, 202, { ok: true, async: true, account: accountStatus(), service: serviceCache.status });
   }
 
   return json(res, 404, { ok: false, error: "Not found" });
@@ -2112,12 +3249,55 @@ async function serviceStatus() {
   };
 }
 
+function refreshServiceStatusInBackground() {
+  const startedAt = Date.now();
+  return serviceStatus().then((status) => {
+    if (startedAt >= serviceCache.at) serviceCache = { at: startedAt, status };
+    return status;
+  });
+}
+
+function localSnapshotNeedsRefresh(today, force = false) {
+  if (force || state.localUsage?.date !== today) return true;
+  const fullAt = Date.parse(state.localUsage?.fullAt || "");
+  return !Number.isFinite(fullAt) || Date.now() - fullAt >= FULL_PREVIEW_REFRESH_INTERVAL_MS;
+}
+
+async function backgroundTick({ force = false } = {}) {
+  const today = localDateString();
+  if (force) {
+    previewCache = { at: 0, date: "", snapshot: null };
+    quotaCache.at = 0;
+    leaderboardAutoRefresh.at = 0;
+  }
+  const jobs = [];
+  jobs.push(refreshClaudeCodeInBackground(today).catch(() => null));
+  if (localSnapshotNeedsRefresh(today, force)) jobs.push(refreshUsageInBackground(today).catch(() => null));
+  jobs.push(cachedZaiQuota().catch(() => null));
+  jobs.push(refreshServiceStatusInBackground().catch(() => null));
+  const board = currentLeaderboardSnapshot(today);
+  const uploadSummary = currentUploadSummary(today);
+  const bindingRefresh = Boolean(state.leaderboardNeedsRefresh);
+  if (force || bindingRefresh || shouldRefreshLeaderboardForUpload(uploadSummary, board, today)) {
+    jobs.push(refreshLeaderboardIfStale(today, { force: force || bindingRefresh }).catch(() => null));
+  }
+  await Promise.allSettled(jobs);
+}
+
+function startBackgroundSchedulers() {
+  if (backgroundTimer) return;
+  void backgroundTick();
+  backgroundTimer = setInterval(() => void backgroundTick(), BACKGROUND_TICK_INTERVAL_MS);
+}
+
 function json(res, status, body) {
+  const payload = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
+    "cache-control": "no-store",
+    "content-length": Buffer.byteLength(payload),
   });
-  res.end(JSON.stringify(body));
+  res.end(payload);
 }
 
 function serveStatic(req, res, url) {
@@ -2140,14 +3320,26 @@ function serveStatic(req, res, url) {
 const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "allow": "GET,POST,OPTIONS",
     });
     return res.end();
   }
 
   const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  const origin = String(req.headers.origin || "");
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  if (req.method === "POST" && fetchSite === "cross-site") {
+    return json(res, 403, { ok: false, error: "cross-site write blocked" });
+  }
+  if (req.method === "POST" && origin) {
+    let allowedOrigin = false;
+    try {
+      const parsedOrigin = new URL(origin);
+      allowedOrigin = ["127.0.0.1", "localhost"].includes(parsedOrigin.hostname)
+        && Number(parsedOrigin.port || (parsedOrigin.protocol === "https:" ? 443 : 80)) === PORT;
+    } catch {}
+    if (!allowedOrigin) return json(res, 403, { ok: false, error: "cross-origin write blocked" });
+  }
   if (req.method === "POST" && url.pathname.startsWith("/tokenrank/api/subapp/u/")) {
     return handleUploadProxy(req, res, url);
   }
@@ -2157,24 +3349,52 @@ const server = http.createServer((req, res) => {
 
 if (require.main === module) {
   ensureProxyConfig();
+  saveState();
   server.listen(PORT, "127.0.0.1", () => {
     console.log(`OpenToken Island proxy running at http://127.0.0.1:${PORT}`);
+    startBackgroundSchedulers();
   });
 }
 
 // 供单元测试直接驱动 buildSummary（require 时不 listen，避免端口冲突）
 module.exports = {
+  accountKeyForUpstreamUrl,
+  bindLeaderboardCandidate,
   buildSummary,
+  buildZaiQuotaFeed,
   buildZaiUsageTrend,
+  cacheLeaderboardCandidates,
   emptyZaiUsageTrend,
-  mergeKnownToolUsage,
+  isolateAccountState,
+  mergeLocalUsageSnapshot,
+  normalizeZaiHistoryTime,
+  redactedUploadRecord,
+  sanitizeUploadPayload,
+  selectOwnEntry,
+  selectZaiQuotaSnapshot,
+  validateScysUpstreamUrl,
+  leaderboardProjection,
   retainLeaderboardSnapshot,
   retainLastGoodZaiQuota,
   retainLastGoodClaudeUsage,
+  refreshLeaderboard,
   summarizeRows,
   uploadableClaudeRows,
   usageTrends,
   localDateString,
-  setState(next) { state = next; },
+  server,
+  setState(next) {
+    state = next;
+    proxyRuntime = { upstreamUrl: String(next?.upstreamUrl || ""), localWebhookUrl: "", proxied: false };
+    leaderboardCandidateCache = { at: 0, accountKey: "", metadata: null, entries: [] };
+    leaderboardAutoRefresh = { at: 0, promise: null };
+    scysAccountGeneration += 1;
+    const fingerprint = String(next?.glmActiveFingerprint || "");
+    const snapshot = fingerprint ? next?.glmSnapshots?.[fingerprint] : null;
+    quotaCache = snapshot ? { at: Date.now(), fingerprint, zai: snapshot } : { at: 0, fingerprint: "", zai: null };
+    zaiRuntime = fingerprint ? { fingerprint, source: "test-state" } : { fingerprint: "", source: "unknown" };
+    zaiLastGoodByAccount.clear();
+    if (snapshot) zaiLastGoodByAccount.set(fingerprint, snapshot);
+  },
   getState() { return state; },
 };

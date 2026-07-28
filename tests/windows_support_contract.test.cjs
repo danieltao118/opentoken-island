@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, "..");
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
 
 const pkg = readJson("package.json");
-assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/build_summary.test.cjs");
+assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs");
 assert.equal(pkg.scripts["tauri:dev"], "tauri dev");
 assert.equal(pkg.scripts["tauri:build"], "tauri build");
 assert.equal(pkg.devDependencies["@tauri-apps/cli"], "^2.11.3");
@@ -151,7 +151,8 @@ assert.doesNotMatch(popoverHtml, /visibleTools\(data\.tools\)/, "Tool usage rows
 assert.doesNotMatch(popoverHtml, /!\s*\/\^codex\$\/i\.test/, "Codex usage should not be filtered out of agent usage stats");
 assert.match(popoverHtml, /id="pauseButton"/, "Pause button should have an explicit behavior hook");
 assert.match(popoverHtml, /function toggleRefreshPause/, "Pause button should pause and resume panel auto-refresh");
-assert.match(popoverHtml, /fetch\(API \+ '\/summary', \{ cache: 'no-store' \}\)/, "Popover summary reads should bypass WebView HTTP cache");
+assert.match(popoverHtml, /fetch\(API \+ '\/summary', \{ cache: 'no-store', signal: loadController\.signal \}\)/, "Popover summary reads should bypass WebView HTTP cache and cancel stale requests");
+assert.match(popoverHtml, /loadController\.abort\(\)/, "Popover should cancel an older summary request before starting a new one");
 assert.match(popoverHtml, /visibilitychange[\s\S]*load\(\)/, "Popover should refresh when a hidden WebView becomes visible again");
 assert.match(popoverHtml, /addEventListener\('focus', load\)/, "Popover should refresh when the pinned panel receives focus");
 assert.match(popoverHtml, /pointerenter[\s\S]*load\(\)/, "Popover should refresh when the tray-hover panel is shown again");
@@ -165,11 +166,13 @@ assert.match(popoverHtml, /\.rank\{display:grid/, "Popover should visibly render
 assert.match(popoverHtml, /实际 Token（本机）/, "Hero should distinguish known actual usage scope from the normalized leaderboard score");
 assert.match(popoverHtml, /id="serviceText"[^>]*role="status"[^>]*aria-live="polite"/, "Service updates should be announced accessibly");
 assert.ok(
-  popoverHtml.indexOf('id="toolList"') < popoverHtml.indexOf('id="rankFacts"')
-    && popoverHtml.indexOf('id="rankFacts"') < popoverHtml.indexOf('id="quotaList"')
-    && popoverHtml.indexOf('id="quotaList"') < popoverHtml.indexOf('id="usageTrend"'),
-  "Panel sections should follow actual usage, leaderboard context, quota, then trend",
+  popoverHtml.indexOf('id="usageTrend"') < popoverHtml.indexOf('id="toolList"')
+    && popoverHtml.indexOf('id="toolList"') < popoverHtml.indexOf('id="rankFacts"')
+    && popoverHtml.indexOf('id="rankFacts"') < popoverHtml.indexOf('id="leaderboardToolList"')
+    && popoverHtml.indexOf('id="leaderboardToolList"') < popoverHtml.indexOf('id="quotaList"'),
+  "Panel sections should prioritize local usage and GLM trend before leaderboard details and quota",
 );
+assert.match(popoverHtml, /同账号多电脑 · 榜单分/, "Leaderboard tools must be visibly labeled as multi-computer SCYS score data");
 assert.match(popoverHtml, /tool\.detail/, "Tool rows should expose the raw leaderboard score as secondary detail");
 assert.match(popoverHtml, /id="usageTrend"/, "Panel bottom should show useful usage trend data");
 assert.match(popoverHtml, /function renderUsageTrend/, "Panel should render GLM usage trend bars");
@@ -202,12 +205,15 @@ assert.doesNotMatch(popoverHtml, /\uFFFD|鎺|鐩|璇|绛|涓婃姤|浜縛|涓嘸
 const islandHtml = fs.readFileSync(path.join(root, "island.html"), "utf8");
 assert.doesNotMatch(islandHtml, /data\.game|xpPct|Builder Lv|XP/, "Island notification must not depend on synthetic game or XP fields");
 assert.match(islandHtml, /rankProgressPct/, "Island progress should use real leaderboard-derived progress");
+assert.match(islandHtml, /function refreshOpenTokenIsland/, "Prewarmed island windows must refresh when shown");
+assert.match(islandHtml, /setInterval\(refreshOpenTokenIsland, 10000\)/, "Island must not freeze on its prewarm snapshot");
 
 const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 assert.doesNotMatch(indexHtml, /Builder Lv|XP|rankDelta|xpText|rankGap|High Output|Codex Main|Hot Streak|216k|#17/, "Browser dashboard must not contain old synthetic demo metrics");
 assert.match(indexHtml, /renderRankFacts/, "Browser dashboard should render real leaderboard facts");
 assert.match(indexHtml, /actualTotalLabel/, "Browser dashboard hero should emphasize the actual fresh input and output total");
-assert.match(indexHtml, /fetch\(API \+ '\/summary', \{ cache: 'no-store' \}\)/, "Browser dashboard should fetch the live summary payload without HTTP cache");
+assert.match(indexHtml, /id="leaderboardToolList"/, "Browser dashboard should separate leaderboard tool composition from local usage");
+assert.match(indexHtml, /loadController\.abort\(\)/, "Browser dashboard should reject stale overlapping summary responses");
 
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
 assert.match(
@@ -245,8 +251,8 @@ assert.ok(
 );
 assert.match(
   serverJs,
-  /if \(!rawBoard\?\.own\) refreshUsageInBackground\(today\);[\s\S]{0,160}const previewSnapshot = previewCache\.date === today \? previewCache\.snapshot : null/,
-  "Summary reads must return cached data and refresh local usage in the background"
+  /function backgroundTick[\s\S]*localSnapshotNeedsRefresh\(today, force\)[\s\S]*refreshUsageInBackground\(today\)/,
+  "A background coordinator must refresh the durable local snapshot outside summary reads"
 );
 assert.match(serverJs, /CODING_QUOTA_CONFIG_PATH/, "Server must know where Coding Quota Bar stores provider config");
 assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quota feed");
@@ -277,14 +283,31 @@ assert.match(serverJs, /function openLogsFile/, "Server should open the local Op
 assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");
 assert.match(serverJs, /leaderboardMatched/, "Sync state must distinguish uploaded data from leaderboard matches");
 assert.match(serverJs, /if \(!uploadSummary && leaderboardMatched\)[\s\S]{0,260}status: "leaderboard"/, "A matched public leaderboard must remain visible when the latest local payload has no token rows");
-assert.match(serverJs, /function openTokenPreviewSnapshot/, "Summary payload should prefer a full local OpenToken preview snapshot over incremental upload payloads");
+assert.match(serverJs, /function mergeLocalUsageSnapshot/, "Local usage must have a durable incremental accumulator");
+assert.match(serverJs, /const localSnapshot = state\.localUsage\?\.date === today/, "Summary must read the persisted local snapshot");
+assert.match(serverJs, /completeness: replace \|\| \(!reset && previous\?\.completeness === "full"\) \? "full" : "observed"/, "Local usage must distinguish full previews from observed incremental data");
 assert.match(serverJs, /\["preview", "--since", date, "--json"\]/, "OpenToken preview snapshots should use the JSON rows that represent the full local daily state");
-assert.doesNotMatch(serverJs, /const uploadByTool = uploadRowsSummary\?\.rowCount[\s\S]{0,80}\? uploadRowsSummary\.byTool/, "Summary must not treat incremental upload payloads as the full local usage source");
-assert.match(serverJs, /url\.searchParams\.get\("refresh"\) === "1"[\s\S]{0,120}previewCache = \{ at: 0, date: "", snapshot: null \}/, "Manual summary refresh should force a fresh local OpenToken preview");
+assert.match(serverJs, /function backgroundTick/, "Network and scan work must be coordinated outside the summary read path");
+const summaryRoute = serverJs.match(/if \(url\.pathname === "\/api\/summary"\)[\s\S]*?\n  \}/)?.[0] || "";
+assert.doesNotMatch(summaryRoute, /await refreshLeaderboard|await serviceStatus|await refreshUsage/, "Summary must not wait for network or CLI work");
+assert.doesNotMatch(summaryRoute, /backgroundTick|refreshLeaderboard|serviceStatus|refreshUsage/, "Summary GET must remain a side-effect-free local projection");
+assert.match(serverJs, /url\.pathname === "\/api\/refresh"[\s\S]*req\.method !== "POST"[\s\S]*void backgroundTick\(\{ force: true \}\)/, "Explicit refresh must use a locally protected POST route");
 assert.match(serverJs, /排行榜仅返回前/, "Sync detail should explain when the current account is not in the returned leaderboard page");
-assert.match(serverJs, /function requestTextWithRetry/, "Upload forwarding should retry transient network failures");
+assert.match(serverJs, /function requestTextWithRetry/, "Read-only quota and leaderboard requests should retain bounded retry support");
 assert.match(serverJs, /ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT/, "Retry logic should cover common DNS and socket failures");
-assert.match(serverJs, /requestTextWithRetry\("POST", upstreamUrl/, "OpenToken upload forwarding must use retry logic");
+assert.doesNotMatch(serverJs, /requestTextWithRetry\("POST", upstreamUrl/, "SCYS POST must not retry without an upstream idempotency contract");
+assert.match(serverJs, /requestText\("POST", upstreamUrl/, "SCYS POST should make one transport attempt and report its real outcome");
+assert.match(serverJs, /function sanitizeUploadPayload/, "Every outbound payload must cross a versioned field allowlist");
+assert.match(serverJs, /function validateScysUpstreamUrl/, "Upload destination must be pinned to the SCYS HTTPS endpoint");
+assert.match(serverJs, /url\.origin === DEFAULT_UPSTREAM_ORIGIN/, "Upload pinning must reject alternate SCYS ports");
+assert.match(serverJs, /MAX_UPLOAD_BODY_BYTES/, "Upload proxy must cap request body size");
+assert.doesNotMatch(serverJs, /"access-control-allow-origin": "\*"/, "Local write APIs must not expose wildcard CORS");
+assert.match(serverJs, /cross-origin write blocked/, "Cross-origin browser writes must be rejected");
+assert.match(serverJs, /sec-fetch-site[\s\S]*cross-site/, "Cross-site writes must also be blocked when browsers omit Origin");
+assert.doesNotMatch(serverJs, /sensitiveCheck: false/, "Opaque protocol tokens must not bypass every sensitive-content check");
+assert.match(serverJs, /function safeOpaqueToken/, "Nonce and signature fields must use a bounded token alphabet");
+assert.doesNotMatch(serverJs, /uploadRecord\.payload\s*=|payload,\s*summary/, "Raw upload payloads must not be persisted");
+assert.doesNotMatch(serverJs, /upstream:\s*\{[\s\S]{0,180}body:/, "Raw upstream response bodies must not be persisted");
 assert.match(serverJs, /function isAnyLocalWebhook/, "Proxy setup must detect localhost webhooks even when they were created by a different temporary port");
 assert.match(serverJs, /isAnyLocalWebhook\(current\)[\s\S]*state\.upstreamUrl = upstreamFromLocal\(current\)/, "Proxy setup must never persist a localhost webhook as the real upstream URL");
 assert.match(serverJs, /state\.upstreamUrl && isAnyLocalWebhook\(state\.upstreamUrl\)[\s\S]*state\.upstreamUrl = upstreamFromLocal\(state\.upstreamUrl\)/, "Proxy setup should repair previously poisoned localhost upstream URLs");
@@ -298,44 +321,50 @@ assert.match(serverJs, /function isSameLocalDate/, "Summary must compare persist
 assert.match(serverJs, /const date = preferredDate \|\| dates\[dates\.length - 1\] \|\| ""/, "An explicit daily summary date must not fall back to the previous day");
 assert.doesNotMatch(serverJs, /openTokenPreviewSnapshot\(uploadSummary\?\.date \|\| localDateString\(\)\)/, "Daily summary must not keep previewing yesterday because the last upload summary is stale");
 assert.match(serverJs, /const today = localDateString\(\)/, "Summary should anchor all local preview and stale-cache checks to today's date");
-assert.match(serverJs, /rawUploadSummary\?\.date === today/, "Summary should ignore persisted upload summaries from previous days");
-assert.match(serverJs, /isSameLocalDate\(state\.leaderboard\?\.updatedAt, today\)/, "Summary should ignore persisted leaderboard matches from previous days");
+assert.match(serverJs, /currentUploadSummary\(today\)/, "Summary should ignore uploads from another day or SCYS account");
+assert.match(serverJs, /currentLeaderboardSnapshot\(today\)/, "Summary should ignore leaderboard matches from another day or SCYS account");
 assert.match(serverJs, /LEADERBOARD_AUTO_REFRESH_INTERVAL_MS/, "Normal panel refreshes should retry stale leaderboard matches without hammering SCYS");
-assert.match(serverJs, /function leaderboardBehindUsage/, "Summary should detect when a persisted leaderboard row is behind today's uploaded usage");
-assert.match(serverJs, /score < usageTotal/, "A leaderboard score below the local uploaded total must be treated as stale");
+assert.doesNotMatch(serverJs, /function leaderboardBehindUsage|score < usageTotal/, "Raw local Token and SCYS score must never be compared as the same metric");
 assert.match(serverJs, /function refreshLeaderboardIfStale/, "Summary endpoint should automatically retry public leaderboard refresh after eventual-consistency lag");
 assert.match(serverJs, /url\.searchParams\.set\("_ts"/, "Leaderboard refresh should bypass stale intermediary cache");
 assert.match(serverJs, /"cache-control": "no-cache"/, "Leaderboard refresh should explicitly request uncached data");
-assert.doesNotMatch(serverJs, /boardIsBehind[\s\S]*own: null/, "A lagging leaderboard must retain its last known official score and rank as secondary facts");
-assert.match(serverJs, /const useLeaderboardForMain = hasLeaderboardScore\b(?!\s*&&)/, "Leaderboard availability should remain available for rank-related metadata");
 assert.match(serverJs, /status: "leaderboard-refreshing"/, "Sync status should say the public leaderboard is still refreshing instead of claiming synced");
-assert.match(serverJs, /const usageSource = previewSnapshot\?\.summary\?\.rowCount[\s\S]*\? "local-preview"[\s\S]*: uploadRowsSummary\?\.rowCount[\s\S]*\? "upload"/, "Summary source should say upload when preview fails and upload rows are used as fallback");
-assert.doesNotMatch(serverJs, /own\?\.score \|\| uploadSummary\?\.total/, "Leaderboard score must not fall back to upload totals when the account is not in the leaderboard");
-assert.match(serverJs, /const leaderboardTotal = Number\(own\?\.score \|\| 0\)/, "Leaderboard total should only come from the matched SCYS leaderboard row");
+assert.match(serverJs, /function leaderboardProjection/, "SCYS score, rank, tools and city must be projected as their own domain");
+assert.match(serverJs, /function leaderboardTools/, "Leaderboard-only Hermes and OpenClaw need an independent tool list");
+assert.match(serverJs, /function leaderboardCity/, "City ranking must have an explicit unavailable state instead of being guessed");
+assert.match(serverJs, /function accountKeyForUpstreamUrl/, "SCYS state should be partitioned by a one-way webhook account fingerprint");
+assert.match(serverJs, /function isolateAccountState/, "Changing the SCYS webhook account must clear its prior identity, upload ack, and leaderboard projection");
+assert.match(serverJs, /function selectOwnEntry/, "Leaderboard identity selection should have one explicit priority contract");
+assert.doesNotMatch(serverJs, /sameToolScores|entry\.score[\s\S]{0,160}normalizedByTool/, "Public leaderboard metrics must never be used to guess an identity");
+assert.match(serverJs, /url\.pathname === "\/api\/leaderboard-bind"/, "A new computer must have an explicit first-bind API instead of depending on top-N metric guessing");
+assert.match(popoverHtml, /id="identityBind"/, "The GUI must expose first-time leaderboard identity binding");
+assert.match(popoverHtml, /只保存所选公开榜单 ID/, "The identity UI should state its local-only privacy boundary");
+assert.match(popoverHtml, /fetch\(API \+ '\/leaderboard-candidates', \{ method: 'POST' \}\)/, "Refreshing candidate data must use the protected POST route");
+assert.match(serverJs, /scysAccountGeneration/, "In-flight leaderboard work must be guarded by an account and identity generation");
+assert.match(serverJs, /if \(leaderboardAutoRefresh\.promise === tracked\)/, "An old leaderboard promise must not clear a newer account's single-flight request");
+assert.match(serverJs, /cityDirectory:[\s\S]*members:/, "SCYS cities.count must be exposed only as participant count");
 assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
-  assert.match(serverJs, /function mergeKnownToolUsage/, "Visible tool rows should merge local and multi-device leaderboard agents by tool");
-  assert.match(serverJs, /const value = Math\.max\(localValue, leaderboardValue\)/, "The same agent must use the best known cumulative value instead of being double-counted");
-  assert.match(serverJs, /const mergedUsage = mergeKnownToolUsage\(localDisplayByTool, leaderboardDisplayByTool\)/, "Leaderboard-only Hermes and OpenClaw values should remain visible beside local agents");
-  assert.match(serverJs, /usageScopeLabel:/, "Summary should label whether actual Token is local or multi-device");
+  assert.doesNotMatch(serverJs.match(/async function buildSummary[\s\S]*?\n\}/)?.[0] || "", /mergeKnownToolUsage/, "Summary must never merge leaderboard score into local actual Token");
+  assert.match(serverJs, /usageScope: "local"/, "Actual Token scope must stay local even when a leaderboard row exists");
   assert.match(popoverHtml, /id="totalCaption"/, "Popover should identify the scope of the visible Token total");
   assert.match(serverJs, /openTokenClaudeCodeUsage[\s\S]*"preview",\s*"--tool",\s*"claude-code"/, "Claude Code usage should be backfilled via a single-tool preview scan that avoids the full-scan timeout");
-  assert.match(serverJs, /refreshClaudeCodeInBackground\(today\);[\s\S]*if \(!rawBoard\?\.own\) refreshUsageInBackground\(today\)/, "Claude Code refresh must still run after a leaderboard match while the expensive full scan stays conditional");
+  assert.match(serverJs, /jobs\.push\(refreshClaudeCodeInBackground\(today\)/, "The background coordinator must refresh Claude Code independently of the leaderboard");
   assert.match(serverJs, /claudeCodeRefresh\.promise[\s\S]*return claudeCodeRefresh\.promise/, "Concurrent panel polls should share one Claude Code scan");
   assert.match(serverJs, /function retainLastGoodClaudeUsage/, "Transient Claude Code scan failures should retain the latest successful daily value");
   assert.match(serverJs, /function uploadableClaudeRows[\s\S]*status !== "ok"[\s\S]*return \[\]/, "Stale Claude GUI rows must never replace a newer upload payload");
   assert.match(serverJs, /claudeCodeStatus:/, "Summary diagnostics should expose whether Claude Code data is fresh, stale, or still loading");
-  assert.match(serverJs, /const claudeByTool = claudeCodeCache\.date === today \? claudeCodeCache : null;[\s\S]*localDisplayByTool\["claude-code"\] = Math\.max/, "Claude Code usage should join the same non-decreasing multi-device merge without blocking the GUI");
+  assert.match(serverJs, /const claudeByTool = claudeCodeCache\.date === today \? claudeCodeCache : null;[\s\S]*localByTool\["claude-code"\] = Math\.max/, "Claude Code usage should update only the local usage projection");
   assert.match(serverJs, /function augmentClaudeCodeRows/, "Upload proxy must expose a helper that augments missing claude-code rows before forwarding to SCYS");
-  assert.match(serverJs, /let forwardBody = body[\s\S]*openTokenClaudeCodeUsage\(summary\.date\)[\s\S]*augmentClaudeCodeRows\(summary\.date\)[\s\S]*forwardBody = JSON\.stringify\(augmentedPayload\)/, "Upload proxy must backfill real claude-code rows for the payload date only");
+  assert.match(serverJs, /const ccRows = augmentClaudeCodeRows\(summary\.date\)/, "Upload proxy may use only a completed Claude cache and must not block on a scan");
   assert.match(serverJs, /String\(r\.date \|\| ""\) === String\(summary\.date\)/, "Upload proxy must replace only same-day Claude rows and preserve other dated records");
 assert.match(serverJs, /const actualTotal = Number\(actualUsage\.total \|\| 0\)/, "The main visible total must equal the sum of deduplicated visible tool rows");
 assert.match(serverJs, /function retainLeaderboardSnapshot/, "A transient leaderboard miss should retain the latest same-day multi-device tool snapshot");
 assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose raw actual usage for the main UI");
-assert.match(serverJs, /totalLabel: usageSummary \|\| uploadSummary \|\| claudeByTool\?\.claudeValue \|\| hasLeaderboardScore/, "A completed Claude-only cache should render while the full preview is refreshing");
+assert.match(serverJs, /overallUsage,/, "Summary payload should expose a standalone local usage domain");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
 assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
 assert.match(serverJs, /label: distanceLabel/, "Rank facts should show the distance to an adjacent rank instead of duplicating the hero rank");
-assert.match(serverJs, /label: "同步状态"/, "Rank facts should show sync state without exposing misleading accepted row counts");
+assert.match(serverJs, /key: "city-rank"/, "Rank facts should expose the SCYS city rank when available");
 assert.doesNotMatch(serverJs, /label: "上报接收"[\s\S]*`\$\{accepted\} 条`/, "Panel facts must not show accepted row counts as a visible usage metric");
 assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
 assert.match(serverJs, /rawValueLabel/, "Tool usage rows should expose the raw leaderboard score separately");
@@ -343,13 +372,13 @@ assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normali
 assert.doesNotMatch(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not use normalized input+output as the primary visible usage");
 assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use raw actual usage as the primary visible value");
 assert.match(serverJs, /function actualUsageSummary/, "Summary should build one audited actual-usage total across live sources");
-assert.match(serverJs, /const hasTokenUsage = Boolean\(summary\.date\) && Number\(summary\.total \|\| 0\) > 0;/, "Token-free activity payloads must not overwrite the last daily usage snapshot");
+assert.match(serverJs, /const hasTokenUsage = Boolean\(summary\.date\) && Array\.isArray\(payload\.rows\)/, "Activity payloads must not overwrite the last daily usage snapshot while valid zero-usage days remain representable");
 assert.match(serverJs, /if \(hasTokenUsage\) \{[\s\S]{0,260}state\.lastUpload =/, "Only payloads with token rows may replace the last daily usage snapshot");
 assert.doesNotMatch(serverJs, /usageToolEntry\(\s*"glm"[\s\S]*Coding Quota Bar 24h/, "Coding Quota Bar GLM provider trends must not be included in the actual usage total");
 assert.match(serverJs, /const codexValue = Number\(rawByTool\.codex \|\| 0\)/, "Codex actual usage should use raw OpenToken tokens including cache reads");
 assert.match(serverJs, /const claudeValue = Number\(rawByTool\["claude-code"\] \|\| 0\)[\s\S]*if \(claudeValue > 0\)/, "Claude Code OpenToken rows should remain in the actual usage total");
 assert.doesNotMatch(serverJs, /const actualByTool = normalizedByTool/, "Actual totals must not collapse to normalized OpenToken rows only");
-assert.match(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary should rebuild normalized tool usage from the last upload payload");
+assert.doesNotMatch(serverJs, /summarizeRows\(rowsFromPayload\(state\.lastUpload\?\.payload\)/, "Summary must not depend on a persisted raw upload payload");
 assert.match(serverJs, /function zaiUsagePeriod/, "Server should build GLM usage periods from Coding Quota Bar model-usage data");
 assert.match(serverJs, /history1d[\s\S]*history7d[\s\S]*history30d/, "Server should expose GLM daily, seven-day, and thirty-day trend data");
 assert.match(serverJs, /history24h/, "Server should expose a recent-24-hour GLM trend for the default panel view");
@@ -358,6 +387,9 @@ assert.match(serverJs, /const periods = \[history24h, history7d, history30d\]/, 
 assert.match(serverJs, /recentDailyUsageHistory\(resp30d, 7\)/, "Seven-day usage should be derived from the validated 30-day detail response");
 assert.match(serverJs, /function zaiUsageResponseState/, "Z.ai trend responses should validate both payload code and array shape");
 assert.match(serverJs, /function retainLastGoodZaiQuota/, "Transient Z.ai failures should retain the most recent successful trend data");
+assert.match(serverJs, /ZAI_STALE_MAX_AGE_MS = 12 \* 60 \* 60 \* 1000/, "Stale GLM trends must have a hard maximum age");
+assert.match(serverJs, /function buildZaiQuotaFeed/, "GLM trend projection must remain available when only the quota endpoint fails");
+assert.match(popoverHtml, /period\.capturedAt[\s\S]*period\.status === 'expired'/, "Trend timestamps must describe the selected period rather than the latest failed attempt");
 assert.match(serverJs, /const activeRefresh = quotaRefreshPromises\.get\(fingerprint\)[\s\S]*if \(activeRefresh\) return activeRefresh/, "Concurrent panel polls should share one Z.ai refresh request");
 assert.match(serverJs, /function zaiAccountFingerprint[\s\S]*zaiLastGoodByAccount\.get\(fingerprint\)/, "Last-known-good trends must be isolated when the Z.ai account changes");
 assert.match(serverJs, /model-usage\?startTime/, "GLM trends should use the same model-usage endpoint as Coding Quota Bar");

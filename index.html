@@ -334,7 +334,7 @@
       <div class="grid">
         <section class="hero">
           <div>
-            <p class="label">今日实际消耗</p>
+            <p class="label">今日实际 Token（本机）</p>
             <p id="totalValue" class="value">--</p>
           </div>
           <div id="rankValue" class="rank">#--</div>
@@ -345,8 +345,12 @@
         </section>
         <section id="rankFacts" class="facts"></section>
         <section class="tools">
-          <h2>Agent 使用量</h2>
+          <h2>本机工具实际 Token</h2>
           <div id="toolList" class="list"><div class="empty">等待真实使用量...</div></div>
+        </section>
+        <section class="tools">
+          <h2>SCYS 榜单工具构成（同账号多电脑）</h2>
+          <div id="leaderboardToolList" class="list"><div class="empty">等待榜单工具数据...</div></div>
         </section>
         <section class="trend">
           <h2>GLM 消耗趋势</h2>
@@ -361,6 +365,9 @@
   <script>
     const API = '/api';
     const $ = (selector) => document.querySelector(selector);
+    let loadController = null;
+    let loadSequence = 0;
+    let manualUploadRunning = false;
 
     function icons() {
       if (window.lucide) window.lucide.createIcons();
@@ -408,14 +415,14 @@
       ).join('');
     }
 
-    function renderTools(tools) {
+    function renderTools(target, tools, scoreMode) {
       const rows = Array.isArray(tools) ? tools : [];
       if (!rows.length) {
-        $('#toolList').innerHTML = '<div class="empty">未读取到 agent 使用量</div>';
+        $(target).innerHTML = '<div class="empty">暂无数据</div>';
         return;
       }
-      $('#toolList').innerHTML = rows.map((tool) =>
-        '<div class="tool" title="' + esc(tool.detail || '') + '"><strong>' + esc(tool.label) + '</strong><div class="bar"><i style="width:' + Math.max(4, Math.min(100, Number(tool.pct) || 0)) + '%"></i></div><span>' + esc(tool.valueLabel || '--') + '</span></div>'
+      $(target).innerHTML = rows.map((tool) =>
+        '<div class="tool" title="' + esc(tool.detail || '') + '"><strong>' + esc(tool.label) + '</strong><div class="bar"><i style="width:' + Math.max(4, Math.min(100, Number(tool.pct) || 0)) + '%"></i></div><span>' + esc((scoreMode ? tool.scoreLabel : tool.valueLabel) || '--') + '</span></div>'
       ).join('');
     }
 
@@ -447,28 +454,49 @@
       $('#uploadLabel').textContent = isLoading ? '上报中...' : '立即上报';
     }
 
+    function manualUploadText(operation) {
+      const labels = {
+        running: '正在扫描并上报',
+        succeeded: 'SCYS 已确认接收',
+        completed: '本轮无新增数据',
+        failed: '上报失败',
+        interrupted: '上次上报被中断'
+      };
+      return labels[operation && operation.status] || '';
+    }
+
     function render(data) {
       if (!data || !data.ok) return;
+      const overall = data.overallUsage || {};
+      const leaderboard = data.leaderboard || {};
       const account = data.account && data.account.connected ? 'scys ' + data.account.accountId : '未绑定 scys';
       const daemon = data.service && data.service.running ? 'daemon running' : 'service unknown';
-      const sync = data.sync && data.sync.label ? data.sync.label : data.source || 'waiting';
-      $('#totalValue').textContent = data.actualTotalLabel || data.totalLabel || '--';
-      $('#rankValue').textContent = data.rankLabel || '#--';
+      const operation = data.sync && data.sync.manualUpload;
+      manualUploadRunning = Boolean(operation && operation.status === 'running');
+      setLoading(manualUploadRunning);
+      const sync = manualUploadText(operation) || (data.sync && data.sync.label ? data.sync.label : data.source || 'waiting');
+      $('#totalValue').textContent = overall.totalLabel || data.actualTotalLabel || '--';
+      $('#rankValue').textContent = leaderboard.rankLabel || data.rankLabel || '#--';
       $('#serviceText').textContent = account + ' · ' + (data.date || '--') + ' · ' + sync + ' · ' + daemon;
       $('#serviceText').title = data.sync && data.sync.detail ? data.sync.detail : '';
       renderRankFacts(data.rankFacts);
       renderQuota(data.quotaFeeds);
-      renderTools(data.tools);
-      renderTrend(data.usageTrends);
+      renderTools('#toolList', overall.tools || data.tools, false);
+      renderTools('#leaderboardToolList', leaderboard.tools || data.leaderboardTools, true);
+      renderTrend(data.glm && data.glm.trends ? { glm: data.glm.trends } : data.usageTrends);
       icons();
     }
 
     async function load() {
+      const sequence = ++loadSequence;
+      if (loadController) loadController.abort();
+      loadController = new AbortController();
       try {
-        const response = await fetch(API + '/summary', { cache: 'no-store' });
-        render(await response.json());
-      } catch {
-        $('#serviceText').textContent = 'Live API unavailable';
+        const response = await fetch(API + '/summary', { cache: 'no-store', signal: loadController.signal });
+        const data = await response.json();
+        if (sequence === loadSequence) render(data);
+      } catch (error) {
+        if (error && error.name !== 'AbortError' && sequence === loadSequence) $('#serviceText').textContent = '本地 API 不可用';
       }
     }
 
@@ -493,7 +521,7 @@
         $('#serviceText').textContent = '上报请求失败：server 未响应或网络错误';
         $('#serviceText').title = String((error && error.message) || error || '');
       } finally {
-        setLoading(false);
+        if (!manualUploadRunning) setLoading(false);
       }
     };
 
@@ -511,7 +539,7 @@
 
     icons();
     load();
-    setInterval(load, 300000);
+    setInterval(load, 10000);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) load();
     });

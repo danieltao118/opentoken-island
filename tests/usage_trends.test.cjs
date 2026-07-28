@@ -2,12 +2,14 @@ const assert = require("assert");
 const path = require("path");
 
 const {
+  buildZaiQuotaFeed,
   buildZaiUsageTrend,
   emptyZaiUsageTrend,
-  mergeKnownToolUsage,
+  normalizeZaiHistoryTime,
   retainLeaderboardSnapshot,
   retainLastGoodClaudeUsage,
   retainLastGoodZaiQuota,
+  selectZaiQuotaSnapshot,
   summarizeRows,
   uploadableClaudeRows,
   usageTrends,
@@ -59,6 +61,34 @@ assert.ok(
   "derived 7d total must not reuse the 30d aggregate total",
 );
 assert.equal(trend.history7d.total, 49000, "7d must include today and the six preceding local dates");
+assert.equal(trend.history24h.bars.length, 24, "24h must always expose 24 hourly buckets");
+assert.equal(trend.history7d.bars.length, 7, "7d must always expose seven daily buckets");
+assert.equal(trend.history30d.bars.length, 30, "30d must expose thirty daily buckets without two-day compaction");
+
+const isoHourly = usageResponse([
+  [`${localDay(0)}T08:00:00`, 200],
+]);
+assert.equal(
+  buildZaiUsageTrend(isoHourly, month).history24h.total,
+  200,
+  "ISO-T timestamps must remain hourly instead of being truncated to a date",
+);
+
+function expectedLocalHour(value) {
+  const date = new Date(value);
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}`;
+}
+assert.equal(
+  normalizeZaiHistoryTime("2026-07-28T08:00:00Z"),
+  expectedLocalHour("2026-07-28T08:00:00Z"),
+  "timezone-aware points must be converted instead of silently dropping the offset",
+);
+assert.equal(
+  normalizeZaiHistoryTime("2026-07-28T08:00:00+08:00"),
+  expectedLocalHour("2026-07-28T08:00:00+08:00"),
+);
+assert.equal(normalizeZaiHistoryTime("2026-13-99T25:00:00"), "", "invalid calendar timestamps must be rejected");
 
 const monthWithDuplicates = usageResponse([
   [localDay(-7), 9999],
@@ -78,6 +108,25 @@ assert.equal(partial.history24h.status, "error");
 assert.equal(partial.history7d.status, "ok");
 assert.equal(partial.history30d.status, "ok");
 
+const quotaIndependent = buildZaiQuotaFeed(
+  { label: "test-account" },
+  { ok: false, error: "quota endpoint unavailable" },
+  hourly,
+  month,
+);
+assert.equal(quotaIndependent.status, "partial", "quota failure must not hide valid GLM trends");
+assert.equal(quotaIndependent.usageTrend.history24h.status, "ok");
+assert.equal(quotaIndependent.usageTrend.history30d.status, "ok");
+
+const quotaAuthPartial = buildZaiQuotaFeed(
+  { label: "test-account" },
+  { ok: false, status: 401, json: { msg: "401 unauthorized" } },
+  { ok: false, error: "temporary usage timeout" },
+  month,
+);
+assert.equal(quotaAuthPartial.quotaReason, "auth");
+assert.equal(quotaAuthPartial.trendReason, "read");
+
 const invalidBusinessCode = buildZaiUsageTrend(
   { ok: true, json: { code: 500, data: { x_time: [], tokensUsage: [] } } },
   month,
@@ -94,6 +143,8 @@ const validZero = buildZaiUsageTrend(usageResponse([]), usageResponse([]));
 assert.equal(validZero.status, "ok", "valid empty responses represent zero usage, not an API error");
 assert.equal(validZero.history24h.totalLabel, "0");
 assert.equal(validZero.history7d.totalLabel, "0");
+assert.equal(validZero.history24h.bars.length, 24, "valid zero usage still needs chart buckets");
+assert.equal(validZero.history30d.bars.length, 30, "valid zero 30d usage must not render as missing data");
 
 const empty = emptyZaiUsageTrend("waiting");
 assert.deepEqual(empty.periods.map((period) => period.key), ["24h", "7d", "30d"]);
@@ -108,6 +159,7 @@ const lastGood = {
   key: "glm",
   status: "ok",
   detail: "fresh quota",
+  capturedAt: new Date().toISOString(),
   usageTrend: trend,
 };
 const stale = retainLastGoodZaiQuota(
@@ -126,6 +178,62 @@ assert.equal(
   authFailure,
   "authentication failures must not present old quota as current",
 );
+
+const neverSuccessful24h = retainLastGoodZaiQuota(
+  { key: "glm", status: "error", detail: "all endpoints failed", usageTrend: emptyZaiUsageTrend("read") },
+  {
+    key: "glm",
+    status: "partial",
+    capturedAt: new Date().toISOString(),
+    usageTrend: partial,
+  },
+);
+assert.equal(neverSuccessful24h.usageTrend.history24h.status, "error", "a never-successful period must not be mislabeled stale");
+assert.equal(neverSuccessful24h.usageTrend.history7d.status, "stale", "a previously successful period may use bounded stale fallback");
+
+const expiredAt = new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString();
+const expiredTrend = {
+  ...trend,
+  history24h: { ...trend.history24h, capturedAt: expiredAt },
+  history1d: { ...trend.history1d, capturedAt: expiredAt },
+  history7d: { ...trend.history7d, capturedAt: expiredAt },
+  history30d: { ...trend.history30d, capturedAt: expiredAt },
+  periods: trend.periods.map((period) => ({ ...period, capturedAt: expiredAt })),
+};
+const expired = retainLastGoodZaiQuota(
+  { key: "glm", status: "error", detail: "temporary failure", usageTrend: emptyZaiUsageTrend("read") },
+  { ...lastGood, capturedAt: expiredAt, usageTrend: expiredTrend },
+);
+assert.equal(expired.status, "expired", "GLM fallback must stop after twelve hours");
+assert.ok(expired.usageTrend.periods.every((period) => period.status === "expired"));
+assert.equal(expired.expiredAt, expiredAt, "expired UI metadata must point to the last successful snapshot");
+
+const mixedFreshness = retainLastGoodZaiQuota(
+  { key: "glm", status: "partial", detail: "24h failed", usageTrend: partial },
+  { ...lastGood, usageTrend: expiredTrend },
+);
+assert.equal(mixedFreshness.usageTrend.history24h.status, "expired", "fresh 7d data must not renew an expired 24h window");
+assert.equal(mixedFreshness.usageTrend.history7d.status, "ok");
+
+const quotaAuthRetained = retainLastGoodZaiQuota(quotaAuthPartial, lastGood);
+assert.equal(quotaAuthRetained.usageTrend.history24h.status, "stale", "quota-only auth failure must not suppress a valid 24h fallback");
+assert.equal(quotaAuthRetained.usageTrend.history7d.status, "ok");
+
+const accountA = { ...lastGood, label: "account-a" };
+const accountB = { ...lastGood, label: "account-b" };
+assert.equal(
+  selectZaiQuotaSnapshot("fingerprint-a", { fingerprint: "fingerprint-b", zai: accountB }, { "fingerprint-a": accountA }).label,
+  "account-a",
+  "GLM hot-path reads must stay within the current account fingerprint",
+);
+assert.equal(selectZaiQuotaSnapshot("not-connected", {}, {}).reason, "not-connected");
+const expiredCache = selectZaiQuotaSnapshot(
+  "fingerprint-a",
+  { fingerprint: "fingerprint-a", zai: { ...lastGood, capturedAt: expiredAt, usageTrend: expiredTrend } },
+  {},
+);
+assert.equal(expiredCache.status, "expired", "a matching in-memory cache must still obey the twelve-hour hard limit");
+assert.ok(expiredCache.usageTrend.periods.every((period) => period.status === "expired"));
 
 const claudeFresh = {
   at: 200,
@@ -173,25 +281,6 @@ assert.deepEqual(
   uploadableClaudeRows({ status: "ok", rows: uploadRows }, localDay(0)),
   uploadRows,
   "only a successful current scan may supply authoritative upload rows",
-);
-
-const multiDevice = mergeKnownToolUsage(
-  { codex: 1000, "claude-code": 500 },
-  { codex: 900, "claude-code": 800, hermes: 300, openclaw: 200 },
-);
-assert.deepEqual(multiDevice.byTool, {
-  codex: 1000,
-  "claude-code": 800,
-  hermes: 300,
-  openclaw: 200,
-});
-assert.equal(multiDevice.sourceByTool.codex, "local", "a lagging leaderboard must not lower local usage");
-assert.equal(multiDevice.sourceByTool["claude-code"], "leaderboard", "the larger multi-device value should win without addition");
-assert.equal(multiDevice.sourceByTool.hermes, "leaderboard", "leaderboard-only agents must remain visible locally");
-assert.equal(
-  Object.values(multiDevice.byTool).reduce((sum, value) => sum + value, 0),
-  2300,
-  "same-tool values must use max rather than being double-counted",
 );
 
 const priorBoard = {

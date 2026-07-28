@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -64,6 +65,52 @@ where
 pub fn is_port_open(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+}
+
+pub fn health_response_matches(response: &str) -> bool {
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let status_ok = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        == Some("200");
+    if !status_ok {
+        return false;
+    }
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return false;
+    };
+    json.get("ok").and_then(|value| value.as_bool()) == Some(true)
+        && json.get("appId").and_then(|value| value.as_str()) == Some("opentoken-island")
+        && json.get("protocolVersion").and_then(|value| value.as_u64()) == Some(3)
+        && json
+            .get("stateSchemaVersion")
+            .and_then(|value| value.as_u64())
+            == Some(3)
+}
+
+pub fn is_opentoken_server(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(350)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream
+        .write_all(
+            format!(
+                "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok() && health_response_matches(&response)
 }
 
 #[cfg(test)]
@@ -221,6 +268,28 @@ mod tests {
     #[test]
     fn detects_closed_local_port() {
         assert!(!is_port_open(9));
+    }
+
+    #[test]
+    fn accepts_only_matching_health_contract() {
+        assert!(health_response_matches(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 85\r\n\r\n{\"ok\":true,\"stateSchemaVersion\":3,\"appId\":\"opentoken-island\",\"protocolVersion\":3}"
+        ));
+        assert!(!health_response_matches(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n51\r\n{\"ok\":true,\"stateSchemaVersion\":3,\"appId\":\"opentoken-island\",\"protocolVersion\":3}\r\n0\r\n\r\n"
+        ));
+        assert!(!health_response_matches(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"appId\":\"another-app\",\"protocolVersion\":3,\"stateSchemaVersion\":3}"
+        ));
+        assert!(!health_response_matches(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"appId\":\"opentoken-island\",\"protocolVersion\":1,\"stateSchemaVersion\":3}"
+        ));
+        assert!(!health_response_matches(
+            "HTTP/1.1 500 Error\r\n\r\n{\"ok\":true,\"appId\":\"opentoken-island\",\"protocolVersion\":3,\"stateSchemaVersion\":3}"
+        ));
+        assert!(!health_response_matches(
+            "HTTP/1.1 200 OK\r\n\r\n{\"message\":\"\\\"appId\\\":\\\"opentoken-island\\\",\\\"protocolVersion\\\":3\"}"
+        ));
     }
 
     #[test]

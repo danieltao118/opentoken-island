@@ -26,8 +26,8 @@ use tauri::{
 #[cfg(all(target_os = "windows", not(debug_assertions)))]
 use windows_support::startup_registry_args;
 use windows_support::{
-    floating_window_origin_bounded_with_anchor_gap, is_port_open, local_url, opentoken_bin,
-    server_resource_path, should_show_panel_on_launch, DEFAULT_PORT,
+    floating_window_origin_bounded_with_anchor_gap, is_opentoken_server, is_port_open, local_url,
+    opentoken_bin, server_resource_path, should_show_panel_on_launch, DEFAULT_PORT,
 };
 
 const PANEL_LABEL: &str = "panel";
@@ -236,7 +236,15 @@ fn ensure_startup_registration() -> tauri::Result<()> {
 
 fn start_server_if_needed(app: &AppHandle) -> tauri::Result<()> {
     if is_port_open(DEFAULT_PORT) {
-        return Ok(());
+        if is_opentoken_server(DEFAULT_PORT) {
+            return Ok(());
+        }
+        return Err(tauri::Error::Io(IoError::new(
+            ErrorKind::AddrInUse,
+            format!(
+                "port {DEFAULT_PORT} is occupied by a service with an incompatible OpenToken Island protocol"
+            ),
+        )));
     }
 
     let server = resolve_server_path(app);
@@ -278,7 +286,7 @@ fn start_server_if_needed(app: &AppHandle) -> tauri::Result<()> {
 fn wait_for_server(port: u16, timeout: Duration) -> tauri::Result<()> {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        if is_port_open(port) {
+        if is_opentoken_server(port) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -386,6 +394,7 @@ fn show_island(app: &AppHandle) -> tauri::Result<()> {
     );
     window.set_position(Position::Physical(position))?;
     window.show()?;
+    let _ = window.eval("window.refreshOpenTokenIsland && window.refreshOpenTokenIsland()");
     schedule_hide_island(app, Duration::from_secs(5));
     Ok(())
 }
@@ -406,6 +415,7 @@ fn show_quota_bar(app: &AppHandle) -> tauri::Result<()> {
     );
     window.set_position(Position::Physical(position))?;
     window.show()?;
+    let _ = window.eval("window.refreshOpenTokenIsland && window.refreshOpenTokenIsland()");
     Ok(())
 }
 

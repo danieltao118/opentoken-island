@@ -27,7 +27,7 @@ The installer:
 - Builds and installs `/Applications/OpenToken Island.app`
 - Registers a login LaunchAgent at `~/Library/LaunchAgents/com.opentoken.island.plist`
 
-After that, OpenToken keeps using its own upload mechanism. OpenToken Island only listens to that upload payload, forwards it to scys, and renders the latest rank, quota, and usage state.
+After that, OpenToken keeps using its own upload mechanism. OpenToken Island validates the aggregate payload against a strict allowlist, forwards only the approved SCYS protocol fields, maintains a local aggregate snapshot, and renders independent local, GLM, and leaderboard views.
 
 If `opentoken` is installed in a non-standard location, pass it explicitly:
 
@@ -42,6 +42,18 @@ The local API port defaults to `4174`; override it with `OPENTOKEN_ISLAND_PORT=4
 Windows support is implemented as a Tauri tray shell around the existing local proxy and Web UI. It does not require .NET SDK.
 
 See [docs/windows-gui.md](docs/windows-gui.md) for setup, development, and build commands.
+
+## Data semantics and privacy
+
+- **Local actual Token** is raw usage from this computer only. It is never merged with SCYS leaderboard score.
+- **GLM quota and 24h/7d/30d trends** come only from the configured Z.ai usage API and retain the latest successful aggregate buckets locally.
+- **SCYS score/rank/tool composition/city** comes only from the SCYS leaderboard response. Hermes and OpenClaw from other computers appear in this section, not in the local total.
+- On a new computer, use **绑定账号** in the leaderboard section once. The choice is a public leaderboard ID stored only on this computer; switching the SCYS webhook account clears the prior binding and leaderboard state.
+- City rank is shown only when SCYS returns a city identity and a city-specific rank. The client does not guess a city from member counts.
+- Uploads reject unknown fields and sensitive-looking values, pin the destination to the SCYS HTTPS endpoint, and persist only aggregate summaries, status, and payload hashes.
+- `/api/summary` reads local projections only; scans and network refreshes run through the background coordinator. GLM fallback is period-specific and expires after 12 hours instead of being shown indefinitely.
+
+The non-negotiable invariants and compatibility rules are documented in [docs/data-contract.md](docs/data-contract.md).
 
 ## Build Installer Package
 
