@@ -39,6 +39,7 @@ async function waitForHealth(url, child) {
       USERPROFILE: home,
       APPDATA: path.join(home, "AppData", "Roaming"),
       OPENTOKEN_ISLAND_PORT: String(port),
+      OPENTOKEN_ISLAND_APP_VERSION: "test-version",
       OPENTOKEN_BIN: path.join(home, "missing-opentoken"),
     },
     stdio: "ignore",
@@ -48,6 +49,7 @@ async function waitForHealth(url, child) {
   try {
     const health = await waitForHealth(base, child);
     assert.equal(health.appId, "opentoken-island");
+    assert.equal(health.appVersion, "test-version");
     assert.equal(health.protocolVersion, 3);
     assert.equal(health.stateSchemaVersion, 3);
     const healthResponse = await fetch(`${base}/api/health`);

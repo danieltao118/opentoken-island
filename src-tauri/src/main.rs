@@ -27,7 +27,8 @@ use tauri::{
 use windows_support::startup_registry_args;
 use windows_support::{
     floating_window_origin_bounded_with_anchor_gap, is_opentoken_server, is_port_open, local_url,
-    opentoken_bin, server_resource_path, should_show_panel_on_launch, DEFAULT_PORT,
+    opentoken_bin, server_command_context, server_resource_path, should_show_panel_on_launch,
+    DEFAULT_PORT,
 };
 
 const PANEL_LABEL: &str = "panel";
@@ -248,13 +249,15 @@ fn start_server_if_needed(app: &AppHandle) -> tauri::Result<()> {
     }
 
     let server = resolve_server_path(app);
+    let (server_dir, server_arg) = server_command_context(&server);
     let home = user_home();
     let opentoken = opentoken_bin(&home);
     let mut command = Command::new("node");
     command
-        .arg(&server)
-        .current_dir(server.parent().unwrap_or_else(|| Path::new(".")))
+        .arg(server_arg)
+        .current_dir(server_dir)
         .env("OPENTOKEN_ISLAND_PORT", DEFAULT_PORT.to_string())
+        .env("OPENTOKEN_ISLAND_APP_VERSION", env!("CARGO_PKG_VERSION"))
         .env("OPENTOKEN_BIN", opentoken);
 
     #[cfg(target_os = "windows")]

@@ -1,6 +1,6 @@
 [package]
 name = "opentoken-island"
-version = "0.1.0"
+version = "0.1.4"
 description = "Windows tray companion for OpenToken Island"
 authors = ["OpenToken Island"]
 edition = "2021"

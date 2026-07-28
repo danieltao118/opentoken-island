@@ -6,12 +6,17 @@ const root = path.resolve(__dirname, "..");
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
 
 const pkg = readJson("package.json");
+const packageLock = readJson("package-lock.json");
+assert.equal(pkg.version, "0.1.4");
+assert.equal(packageLock.version, pkg.version);
+assert.equal(packageLock.packages[""].version, pkg.version);
 assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs");
 assert.equal(pkg.scripts["tauri:dev"], "tauri dev");
 assert.equal(pkg.scripts["tauri:build"], "tauri build");
 assert.equal(pkg.devDependencies["@tauri-apps/cli"], "^2.11.3");
 
 const config = readJson("src-tauri/tauri.conf.json");
+assert.equal(config.version, pkg.version);
 assert.equal(config.identifier, "com.opentoken.island.windows");
 assert.equal(config.productName, "OpenToken Island");
 assert.equal(config.build.frontendDist, "../desktop-placeholder");
@@ -19,13 +24,21 @@ assert.equal(config.app.withGlobalTauri, false);
 assert.deepEqual(config.bundle.targets, ["nsis"]);
 assert.ok(config.bundle.icon.includes("icons/icon.png"));
 assert.ok(config.bundle.icon.includes("icons/icon.ico"));
-assert.ok(config.bundle.resources.includes("../server.js"));
-assert.ok(config.bundle.resources.includes("../popover.html"));
-assert.ok(config.bundle.resources.includes("../island.html"));
-assert.ok(config.bundle.resources.includes("../index.html"));
+assert.equal(config.bundle.resources["../server.js"], "server.js");
+assert.equal(config.bundle.resources["../popover.html"], "popover.html");
+assert.equal(config.bundle.resources["../island.html"], "island.html");
+assert.equal(config.bundle.resources["../index.html"], "index.html");
+assert.equal(config.bundle.resources["../assets/"], "assets/");
+assert.equal(config.bundle.windows.nsis.installMode, "currentUser");
+assert.equal(config.bundle.windows.nsis.installerHooks, "nsis-hooks.nsh");
 assert.ok(fs.existsSync(path.join(root, "src-tauri/icons/icon.ico")));
 
 const cargoToml = fs.readFileSync(path.join(root, "src-tauri/Cargo.toml"), "utf8");
+const cargoLock = fs.readFileSync(path.join(root, "src-tauri/Cargo.lock"), "utf8");
+const cargoVersion = cargoToml.match(/^version = "([^"]+)"/m)?.[1];
+const lockedAppVersion = cargoLock.match(/\[\[package\]\]\s+name = "opentoken-island"\s+version = "([^"]+)"/m)?.[1];
+assert.equal(cargoVersion, pkg.version);
+assert.equal(lockedAppVersion, pkg.version);
 assert.match(cargoToml, /tauri = \{ version = "2"/);
 assert.match(cargoToml, /features = \["tray-icon", "image-png"\]/);
 
@@ -216,6 +229,11 @@ assert.match(indexHtml, /id="leaderboardToolList"/, "Browser dashboard should se
 assert.match(indexHtml, /loadController\.abort\(\)/, "Browser dashboard should reject stale overlapping summary responses");
 
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
+const nsisHooks = fs.readFileSync(path.join(root, "src-tauri/nsis-hooks.nsh"), "utf8");
+assert.doesNotMatch(nsisHooks, /NSIS_HOOK_PREUNINSTALL/);
+assert.match(nsisHooks, /NSIS_HOOK_POSTUNINSTALL/);
+assert.match(nsisHooks, /\$\{If\} \$UpdateMode <> 1/);
+assert.match(nsisHooks, /DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "OpenTokenIsland"/);
 assert.match(
   windowsSupport,
   /STARTUP_RUN_KEY: &str = r"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"/,
@@ -231,6 +249,13 @@ assert.match(
   /startup_registry_args\(exe: &Path\) -> Vec<String>/,
   "Startup registry arguments should be generated in a testable helper"
 );
+assert.match(
+  windowsSupport,
+  /server_command_context\(server: &Path\) -> \(PathBuf, OsString\)/,
+  "Node server launch should reduce an installed path with spaces to a working directory plus filename"
+);
+assert.match(mainRs, /let \(server_dir, server_arg\) = server_command_context\(&server\)/);
+assert.match(mainRs, /\.arg\(server_arg\)\s*\.current_dir\(server_dir\)/);
 const officialRsCandidate = 'home.join(".opentoken").join("bin").join("opentoken.exe")';
 const legacyRsCandidate = 'home.join(".local").join("bin").join("opentoken.exe")';
 assert.ok(
@@ -241,8 +266,12 @@ assert.ok(
   windowsSupport.indexOf(officialRsCandidate) < windowsSupport.indexOf(legacyRsCandidate),
   "Windows GUI must prefer the official .opentoken binary over the legacy .local command"
 );
+assert.match(mainRs, /OPENTOKEN_ISLAND_APP_VERSION", env!\("CARGO_PKG_VERSION"\)/);
+assert.match(windowsSupport, /json\.get\("appVersion"\)[\s\S]*env!\("CARGO_PKG_VERSION"\)/);
 
 const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
+assert.match(serverJs, /const APP_VERSION = String\(process\.env\.OPENTOKEN_ISLAND_APP_VERSION/);
+assert.match(serverJs, /appVersion: APP_VERSION/);
 const officialOpenTokenCandidate = 'path.join(HOME, ".opentoken", "bin", "opentoken.exe")';
 const legacyOpenTokenCandidate = 'path.join(HOME, ".local", "bin", "opentoken.exe")';
 assert.ok(

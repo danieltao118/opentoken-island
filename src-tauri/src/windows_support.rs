@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -27,6 +28,18 @@ pub fn opentoken_bin(home: &Path) -> PathBuf {
 
 pub fn server_resource_path(resource_dir: &Path) -> PathBuf {
     resource_dir.join("server.js")
+}
+
+pub fn server_command_context(server: &Path) -> (PathBuf, OsString) {
+    let working_dir = server
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let argument = server
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| OsString::from("server.js"));
+    (working_dir, argument)
 }
 
 pub fn local_url(path: &str) -> String {
@@ -84,6 +97,8 @@ pub fn health_response_matches(response: &str) -> bool {
     };
     json.get("ok").and_then(|value| value.as_bool()) == Some(true)
         && json.get("appId").and_then(|value| value.as_str()) == Some("opentoken-island")
+        && json.get("appVersion").and_then(|value| value.as_str())
+            == Some(env!("CARGO_PKG_VERSION"))
         && json.get("protocolVersion").and_then(|value| value.as_u64()) == Some(3)
         && json
             .get("stateSchemaVersion")
@@ -225,6 +240,17 @@ mod tests {
     }
 
     #[test]
+    fn starts_server_from_working_directory_when_install_path_has_spaces() {
+        let server = Path::new(r"C:\Users\ty\AppData\Local\OpenToken Island\server.js");
+        let (working_dir, argument) = server_command_context(server);
+        assert_eq!(
+            working_dir,
+            PathBuf::from(r"C:\Users\ty\AppData\Local\OpenToken Island")
+        );
+        assert_eq!(argument, OsString::from("server.js"));
+    }
+
+    #[test]
     fn builds_local_urls() {
         assert_eq!(
             local_url("popover.html"),
@@ -272,11 +298,13 @@ mod tests {
 
     #[test]
     fn accepts_only_matching_health_contract() {
-        assert!(health_response_matches(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 85\r\n\r\n{\"ok\":true,\"stateSchemaVersion\":3,\"appId\":\"opentoken-island\",\"protocolVersion\":3}"
-        ));
+        let good = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"ok\":true,\"stateSchemaVersion\":3,\"appId\":\"opentoken-island\",\"appVersion\":\"{}\",\"protocolVersion\":3}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(health_response_matches(&good));
         assert!(!health_response_matches(
-            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n51\r\n{\"ok\":true,\"stateSchemaVersion\":3,\"appId\":\"opentoken-island\",\"protocolVersion\":3}\r\n0\r\n\r\n"
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"stateSchemaVersion\":3,\"appId\":\"opentoken-island\",\"appVersion\":\"0.0.0\",\"protocolVersion\":3}"
         ));
         assert!(!health_response_matches(
             "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"appId\":\"another-app\",\"protocolVersion\":3,\"stateSchemaVersion\":3}"

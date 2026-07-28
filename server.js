@@ -18,6 +18,7 @@ const CODING_QUOTA_CONFIG_PATH = path.join(APPDATA, "coding-quota-bar", "config.
 const TOKENRANK_URL = "https://scys.com/tokenrank/";
 const ZAI_CODING_API_BASE = "https://api.z.ai";
 const APP_ID = "opentoken-island";
+const APP_VERSION = String(process.env.OPENTOKEN_ISLAND_APP_VERSION || "unmanaged").trim() || "unmanaged";
 const API_PROTOCOL_VERSION = 3;
 const STATE_SCHEMA_VERSION = 3;
 const MAX_UPLOAD_BODY_BYTES = 4 * 1024 * 1024;
@@ -3132,6 +3133,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       ok: true,
       appId: APP_ID,
+      appVersion: APP_VERSION,
       protocolVersion: API_PROTOCOL_VERSION,
       stateSchemaVersion: STATE_SCHEMA_VERSION,
     });
