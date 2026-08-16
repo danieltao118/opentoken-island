@@ -128,6 +128,24 @@ pub fn is_opentoken_server(port: u16) -> bool {
     stream.read_to_string(&mut response).is_ok() && health_response_matches(&response)
 }
 
+/// 请求占用端口的旧版本/unmanaged 代理优雅退出（0.1.5+ 的 server.js 提供 /api/shutdown）。
+/// 仅供本机 GUI 版本接管使用；失败静默，由调用方按端口是否释放决定后续。
+pub fn request_server_shutdown(port: u16) {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(350)) else {
+        return;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.write_all(
+        format!("POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+    );
+    let _ = stream.flush();
+    let mut buffer = [0u8; 256];
+    let _ = stream.read(&mut buffer);
+}
+
 #[cfg(test)]
 pub fn floating_window_origin(
     tray_x: i32,

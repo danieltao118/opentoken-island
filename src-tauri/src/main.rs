@@ -27,8 +27,8 @@ use tauri::{
 use windows_support::startup_registry_args;
 use windows_support::{
     floating_window_origin_bounded_with_anchor_gap, is_opentoken_server, is_port_open, local_url,
-    opentoken_bin, server_command_context, server_resource_path, should_show_panel_on_launch,
-    DEFAULT_PORT,
+    opentoken_bin, request_server_shutdown, server_command_context, server_resource_path,
+    should_show_panel_on_launch, DEFAULT_PORT,
 };
 
 const PANEL_LABEL: &str = "panel";
@@ -98,12 +98,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build OpenToken Island")
         .run(|app, event| {
+            // 代理以 detached 方式常驻后台：GUI 退出不再杀 node server.js（否则 GUI 一退，
+            // 依赖 4174 的自动上传/榜单刷新全部落空）。这里只把 Child 句柄取空释放，
+            // 进程本身继续服务 4174，下次启动经健康检查复用。
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<ServerProcess>() {
-                    if let Ok(mut child) = state.0.lock() {
-                        if let Some(mut child) = child.take() {
-                            let _ = child.kill();
-                        }
+                    if let Ok(mut slot) = state.0.lock() {
+                        let _ = slot.take();
                     }
                 }
             }
@@ -240,12 +241,17 @@ fn start_server_if_needed(app: &AppHandle) -> tauri::Result<()> {
         if is_opentoken_server(DEFAULT_PORT) {
             return Ok(());
         }
-        return Err(tauri::Error::Io(IoError::new(
-            ErrorKind::AddrInUse,
-            format!(
-                "port {DEFAULT_PORT} is occupied by a service with an incompatible OpenToken Island protocol"
-            ),
-        )));
+        // 端口被旧版本/unmanaged 代理占用：先请求其优雅退出（0.1.5+ 的 server.js 提供
+        // /api/shutdown），等端口释放后自己接管。旧版代理没有该端点时退回原 AddrInUse 报错。
+        request_server_shutdown(DEFAULT_PORT);
+        if !wait_for_port_free(DEFAULT_PORT, Duration::from_secs(5)) {
+            return Err(tauri::Error::Io(IoError::new(
+                ErrorKind::AddrInUse,
+                format!(
+                    "port {DEFAULT_PORT} is occupied by a service with an incompatible OpenToken Island protocol"
+                ),
+            )));
+        }
     }
 
     let server = resolve_server_path(app);
@@ -260,10 +266,18 @@ fn start_server_if_needed(app: &AppHandle) -> tauri::Result<()> {
         .env("OPENTOKEN_ISLAND_APP_VERSION", env!("CARGO_PKG_VERSION"))
         .env("OPENTOKEN_BIN", opentoken);
 
+    // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP 让代理脱离 GUI 进程组常驻后台
+    //（DETACHED_PROCESS 与 CREATE_NO_WINDOW 互斥，只能二选一）；stdio 显式断开。
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command
+            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
     }
 
     let child = command.spawn().map_err(|error| {
@@ -299,6 +313,17 @@ fn wait_for_server(port: u16, timeout: Duration) -> tauri::Result<()> {
         ErrorKind::TimedOut,
         format!("OpenToken Island server did not become ready on port {port}"),
     )))
+}
+
+fn wait_for_port_free(port: u16, timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !is_port_open(port) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    !is_port_open(port)
 }
 
 fn prewarm_windows(app: &AppHandle) -> tauri::Result<()> {

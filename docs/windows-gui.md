@@ -37,14 +37,18 @@ The tray icon appears in the Windows notification area.
 
 The panel and island WebViews are created hidden during startup. Hover uses the same `popover.html` panel as the main UI; left click switches that panel into a pinned state. The floating panel is borderless, transparent, clamped to the current monitor work area, keeps a 430 px gap from the tray anchor so it floats above the Windows hidden-icons flyout, and includes extra transparent padding so the glass panel shadow and rounded corners are not clipped.
 
-If port `4174` is already open, the Tauri app reuses the existing local server. If the port is closed, it starts `server.js` with:
+If port `4174` is already open, the Tauri app reuses the existing local server. If the port is held by an older or unmanaged server whose health check does not match, the shell asks it to exit via `POST /api/shutdown` and takes over the port itself. If the port is closed, it starts `server.js` with:
 
 ```text
 OPENTOKEN_ISLAND_PORT=4174
-OPENTOKEN_BIN=%USERPROFILE%\.local\bin\opentoken.exe
+OPENTOKEN_BIN=%USERPROFILE%\.opentoken\bin\opentoken.exe
 ```
 
-On Windows, the shell prefers `%USERPROFILE%\.local\bin\opentoken.exe` and falls back to `%USERPROFILE%\.opentoken\bin\opentoken.exe` for older installs.
+On Windows, the shell prefers `%USERPROFILE%\.opentoken\bin\opentoken.exe` (official client) and falls back to `%USERPROFILE%\.local\bin\opentoken.exe` for older installs.
+
+## Proxy lifecycle (0.1.5+)
+
+The Node proxy is spawned detached (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`) and is no longer killed when the tray app exits. Quitting the GUI leaves `127.0.0.1:4174` running so scheduled uploads and the webhook keep working; the next GUI launch reuses it via the health check. The uninstaller stops the GUI and asks the proxy to exit via `/api/shutdown` (it never kills `node.exe` by image name).
 
 ## Build Installer
 

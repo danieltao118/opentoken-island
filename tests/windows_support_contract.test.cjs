@@ -7,7 +7,7 @@ const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "ut
 
 const pkg = readJson("package.json");
 const packageLock = readJson("package-lock.json");
-assert.equal(pkg.version, "0.1.4");
+assert.equal(pkg.version, "0.1.5");
 assert.equal(packageLock.version, pkg.version);
 assert.equal(packageLock.packages[""].version, pkg.version);
 assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs");
@@ -272,6 +272,16 @@ assert.match(windowsSupport, /json\.get\("appVersion"\)[\s\S]*env!\("CARGO_PKG_V
 const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
 assert.match(serverJs, /const APP_VERSION = String\(process\.env\.OPENTOKEN_ISLAND_APP_VERSION/);
 assert.match(serverJs, /appVersion: APP_VERSION/);
+// 0.1.5+：代理 detached 常驻 + 版本接管。固化关键行为，防止回退成「GUI 退出杀代理」。
+assert.match(mainRs, /DETACHED_PROCESS/, "Server must spawn detached so the proxy survives GUI exit");
+assert.doesNotMatch(mainRs, /child\.kill\(\)/, "GUI exit must NOT kill the always-on proxy");
+assert.match(
+  mainRs,
+  /request_server_shutdown\(DEFAULT_PORT\)/,
+  "Version takeover must try graceful shutdown before failing on an incompatible proxy"
+);
+assert.match(windowsSupport, /pub fn request_server_shutdown\(port: u16\)/);
+assert.match(serverJs, /\/api\/shutdown/, "Server must expose a local shutdown endpoint for takeover and uninstall");
 const officialOpenTokenCandidate = 'path.join(HOME, ".opentoken", "bin", "opentoken.exe")';
 const legacyOpenTokenCandidate = 'path.join(HOME, ".local", "bin", "opentoken.exe")';
 assert.ok(
