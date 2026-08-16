@@ -158,6 +158,34 @@ const safeActivity = sanitizeUploadPayload({
 });
 assert.equal(safeActivity.events[0].type, "usage_hourly");
 
+// v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
+const safeV2 = sanitizeUploadPayload({
+  schema: "opentoken.activity.v2",
+  version: 2,
+  device: "0123456789abcdef",
+  seq: 199,
+  sent_at: "2026-08-16T01:02:03.000Z",
+  tz: "Asia/Shanghai",
+  nonce: "abcdef0123456789",
+  v2_hourly: [{ hour_utc: "2026-08-16T01", tool: "codex", model: "gpt-5.6-sol", input: 1, output: 2, cache_read: 3, cache_write: 4 }],
+  v2_sessions: [{ date, tool: "codex", session_key: "0123456789abcdef0123456789abcdef01234567", started: 1781791963, ended: 1781792000, messages: 12, user_messages: 3, active_seconds: 300 }],
+  sig: "abcdef0123456789abcdef0123456789",
+});
+assert.deepEqual(Object.keys(safeV2), ["v2_hourly", "v2_sessions", "schema", "version", "device", "seq", "sent_at", "tz", "nonce", "sig"]);
+assert.deepEqual(Object.keys(safeV2.v2_hourly[0]), ["hour_utc", "tool", "model", "input", "output", "cache_read", "cache_write"]);
+assert.deepEqual(Object.keys(safeV2.v2_sessions[0]), ["date", "tool", "session_key", "started", "ended", "messages", "user_messages", "active_seconds"]);
+for (const payload of [
+  { v2_hourly: [], v2_sessions: [], prompt: "secret" },
+  { v2_hourly: [{ hour_utc: "2026-08-16T01", tool: "codex", model: "gpt", input: 1, response: "secret" }], v2_sessions: [] },
+  { v2_hourly: [{ hour_utc: "2026-08-16T01", tool: "codex", model: "C:\\private\\key.txt", input: 1 }], v2_sessions: [] },
+  { v2_hourly: [], v2_sessions: [{ date, tool: "codex", session_key: "0123456789abcdef0123456789abcdef01234567", started: 1, ended: 2, messages: 1, user_messages: 1, active_seconds: 1, command: "secret" }] },
+  { v2_hourly: [], v2_sessions: [{ date, tool: "codex", session_key: "unsafe\r\nkey1234567890", started: 1, ended: 2, messages: 1, user_messages: 1, active_seconds: 1 }] },
+  { v2_hourly: [{ hour_utc: "2026-08-16T01", tool: "codex", model: "gpt", input: "123" }], v2_sessions: [] },
+  { v2_hourly: [{ hour_utc: "2026-08-16 01", tool: "codex", model: "gpt", input: 1 }], v2_sessions: [] },
+]) {
+  assert.throws(() => sanitizeUploadPayload(payload), /upload payload rejected/i);
+}
+
 assert.equal(validateScysUpstreamUrl("https://scys.com/tokenrank/api/subapp/u/account"), true);
 for (const target of [
   "http://scys.com/tokenrank/api/subapp/u/account",

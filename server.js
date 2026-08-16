@@ -709,6 +709,18 @@ function plainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+// 拒绝时只记录结构摘要（键名/类型/数组长度），绝不记录值，用于诊断未知 schema。
+function payloadShapeSummary(value) {
+  if (!plainObject(value)) return `type:${typeof value}`;
+  const keys = Object.keys(value);
+  const detail = {};
+  for (const key of keys.slice(0, 24)) {
+    const item = value[key];
+    detail[key] = Array.isArray(item) ? `array[${item.length}]` : typeof item;
+  }
+  return JSON.stringify({ keys, detail });
+}
+
 function exactKeys(value, allowed, context) {
   if (!plainObject(value)) uploadRejected(`${context} must be an object`);
   const extras = Object.keys(value).filter((key) => !allowed.includes(key));
@@ -787,6 +799,42 @@ function sanitizeSessionRow(row, index = 0) {
   };
 }
 
+// v2 事件流批数据（0.3.5 CLI 实际线格式，取自 upload --dry-run --v2 实测）：
+// 根为 {v2_hourly:[...], v2_sessions:[...]}（真实发送可能另带 schema/nonce/sig 信封）。
+const V2_HOURLY_KEYS = ["hour_utc", "tool", "model", "input", "output", "cache_read", "cache_write"];
+function sanitizeV2HourlyRow(row, index = 0) {
+  exactKeys(row, V2_HOURLY_KEYS, `v2_hourly[${index}]`);
+  const hourUtc = safeProtocolString(row.hour_utc, `v2_hourly[${index}].hour_utc`, 20);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(hourUtc)) uploadRejected(`v2_hourly[${index}].hour_utc is invalid`);
+  return {
+    hour_utc: hourUtc,
+    tool: safeProtocolString(row.tool, `v2_hourly[${index}].tool`, 80),
+    model: safeProtocolString(row.model ?? "unknown", `v2_hourly[${index}].model`, 160),
+    input: safeNonNegativeNumber(row.input, `v2_hourly[${index}].input`),
+    output: safeNonNegativeNumber(row.output, `v2_hourly[${index}].output`),
+    cache_read: safeNonNegativeNumber(row.cache_read, `v2_hourly[${index}].cache_read`),
+    cache_write: safeNonNegativeNumber(row.cache_write, `v2_hourly[${index}].cache_write`),
+  };
+}
+
+// 会话统计用 started/ended（Unix 秒整数）而非 ISO 字符串；session_key 为 40 位 hex。
+const V2_SESSION_KEYS = ["date", "tool", "session_key", "started", "ended", "messages", "user_messages", "active_seconds"];
+function sanitizeV2SessionRow(row, index = 0) {
+  exactKeys(row, V2_SESSION_KEYS, `v2_sessions[${index}]`);
+  const date = safeProtocolString(row.date, `v2_sessions[${index}].date`, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) uploadRejected(`v2_sessions[${index}].date is invalid`);
+  return {
+    date,
+    tool: safeProtocolString(row.tool, `v2_sessions[${index}].tool`, 80),
+    session_key: safeOpaqueToken(row.session_key, `v2_sessions[${index}].session_key`, 16, 160),
+    started: safeInteger(row.started, `v2_sessions[${index}].started`),
+    ended: safeInteger(row.ended, `v2_sessions[${index}].ended`),
+    messages: safeInteger(row.messages, `v2_sessions[${index}].messages`),
+    user_messages: safeInteger(row.user_messages, `v2_sessions[${index}].user_messages`),
+    active_seconds: safeNonNegativeNumber(row.active_seconds, `v2_sessions[${index}].active_seconds`),
+  };
+}
+
 function sanitizeActivityEvent(event, index = 0) {
   if (!plainObject(event)) uploadRejected(`events[${index}] must be an object`);
   const type = safeProtocolString(event.type, `events[${index}].type`, 40);
@@ -850,6 +898,30 @@ function sanitizeUploadPayload(payload) {
       rows: payload.rows.map(sanitizeUsageRow),
       sessions: (Array.isArray(payload.sessions) ? payload.sessions : uploadRejected("sessions must be an array")).map(sanitizeSessionRow),
     };
+  }
+  if (Array.isArray(payload.v2_hourly) || Array.isArray(payload.v2_sessions)) {
+    exactKeys(payload, ["schema", "version", "device", "seq", "sent_at", "tz", "nonce", "sig", "v2_hourly", "v2_sessions"], "root");
+    const hourly = Array.isArray(payload.v2_hourly) ? payload.v2_hourly : [];
+    const sessions = Array.isArray(payload.v2_sessions) ? payload.v2_sessions : [];
+    if (hourly.length > 10000 || sessions.length > 10000) uploadRejected("too many rows");
+    const sanitized = {
+      v2_hourly: hourly.map(sanitizeV2HourlyRow),
+      v2_sessions: sessions.map(sanitizeV2SessionRow),
+    };
+    // 信封字段全部可选（dry-run 只发内层批数据；真实发送是否带信封以实测为准），逐个按类型消毒透传。
+    if (payload.schema !== undefined) sanitized.schema = safeProtocolString(payload.schema, "schema", 80);
+    if (payload.version !== undefined) {
+      sanitized.version = typeof payload.version === "string"
+        ? safeProtocolString(payload.version, "version", 20)
+        : safeNonNegativeNumber(payload.version, "version");
+    }
+    if (payload.device !== undefined) sanitized.device = safeProtocolString(payload.device, "device", 160);
+    if (payload.seq !== undefined) sanitized.seq = safeInteger(payload.seq, "seq");
+    if (payload.sent_at !== undefined) sanitized.sent_at = safeProtocolString(payload.sent_at, "sent_at", 40);
+    if (payload.tz !== undefined) sanitized.tz = safeProtocolString(payload.tz, "tz", 80);
+    if (payload.nonce !== undefined) sanitized.nonce = safeOpaqueToken(payload.nonce, "nonce");
+    if (payload.sig !== undefined) sanitized.sig = safeOpaqueToken(payload.sig, "sig", 16);
+    return sanitized;
   }
   if (Array.isArray(payload.events)) {
     exactKeys(payload, ["schema", "version", "device", "seq", "sent_at", "tz", "nonce", "events", "sig"], "root");
@@ -3044,7 +3116,12 @@ async function handleUploadProxy(req, res, url) {
   try {
     payload = sanitizeUploadPayload(parsed);
   } catch (error) {
-    logIslandEvent("blocked upload payload", { path: redactedPath, reason: "schema-rejected" });
+    logIslandEvent("blocked upload payload", {
+      path: redactedPath,
+      reason: "schema-rejected",
+      shape: payloadShapeSummary(parsed),
+      detail: String(error.message || "").slice(0, 200),
+    });
     return json(res, 400, { ok: false, error: String(error.message || "Upload payload rejected") });
   }
   const payloadKind = Array.isArray(payload.rows) ? "usage-v1" : "activity-v2";
@@ -3244,6 +3321,19 @@ async function handleApi(req, res, url) {
       ok: true,
       leaderboard: leaderboardProjection(bound.board, { accountConnected: true, boundUserId: userId }),
     });
+  }
+
+  if (url.pathname === "/api/shutdown") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "POST required" });
+    // 仅供本机新版本 GUI 接管（版本不匹配时优雅退出）与卸载流程使用；
+    // 受全局 Origin/Sec-Fetch-Site 本地校验保护。
+    logIslandEvent("shutdown requested");
+    json(res, 200, { ok: true, message: "shutting down" });
+    setTimeout(() => {
+      server.close();
+      process.exit(0);
+    }, 200);
+    return;
   }
 
   if (url.pathname === "/api/open-logs") {
