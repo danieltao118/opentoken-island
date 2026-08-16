@@ -158,6 +158,21 @@ const safeActivity = sanitizeUploadPayload({
 });
 assert.equal(safeActivity.events[0].type, "usage_hourly");
 
+// 0.3.5 CLI 实测信封：schema 为数字、version 为字符串（取证日志 2026-08-16）。
+const numericSchemaActivity = sanitizeUploadPayload({
+  schema: 2,
+  version: "2",
+  device: "0123456789abcdef",
+  seq: 198,
+  sent_at: "2026-08-16T01:02:03.000Z",
+  tz: "Asia/Shanghai",
+  nonce: "abcdef0123456789",
+  events: [{ type: "client_health", captured_at: "2026-08-16T01:02:03Z", payload: { scan_ms: 42000, ledger: { usage: 256, hourly: 1957, v2_sessions: 3313 }, unhoured: 0 } }],
+  sig: "abcdef0123456789abcdef0123456789",
+});
+assert.equal(numericSchemaActivity.schema, 2);
+assert.equal(numericSchemaActivity.version, "2");
+
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
 const safeV2 = sanitizeUploadPayload({
   schema: "opentoken.activity.v2",

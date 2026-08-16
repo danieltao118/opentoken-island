@@ -927,7 +927,10 @@ function sanitizeUploadPayload(payload) {
     exactKeys(payload, ["schema", "version", "device", "seq", "sent_at", "tz", "nonce", "events", "sig"], "root");
     if (payload.events.length > 10000) uploadRejected("too many events");
     return {
-      schema: safeProtocolString(payload.schema, "schema", 80),
+      // 0.3.5 CLI 实测：schema 发数字、version 发字符串（取证日志 2026-08-16），两者都兼容。
+      schema: typeof payload.schema === "string"
+        ? safeProtocolString(payload.schema, "schema", 80)
+        : safeNonNegativeNumber(payload.schema, "schema"),
       version: typeof payload.version === "string"
         ? safeProtocolString(payload.version, "version", 20)
         : safeNonNegativeNumber(payload.version, "version"),
