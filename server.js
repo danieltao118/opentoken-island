@@ -26,9 +26,17 @@ const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTA_ERROR_CACHE_TTL_MS = 30 * 1000;
 const ZAI_STALE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const PREVIEW_CACHE_TTL_MS = 45 * 1000;
-// 全量 preview 只在后台刷新；Codex 历史较多时需要分钟级，不应再用 GUI 热路径的 10 秒上限。
-const FULL_PREVIEW_TIMEOUT_MS = 10 * 60 * 1000;
+// 全量 preview 默认停用：这台机器 44GB Codex 日志实测 >10 分钟扫不完（0.2.x CLI 的
+// --since 只过滤输出、不裁剪扫描），后台循环只会周期性杀-拉进程空转烧 CPU。
+// 设 OPENTOKEN_ENABLE_FULL_PREVIEW=1 可恢复旧的定时全量刷新。
+const FULL_PREVIEW_ENABLED = /^(1|true|yes)$/i.test(process.env.OPENTOKEN_ENABLE_FULL_PREVIEW || "");
+const FULL_PREVIEW_TIMEOUT_MS = Number(process.env.OPENTOKEN_FULL_PREVIEW_TIMEOUT_MS || 30 * 60 * 1000);
 const FULL_PREVIEW_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// 手动/自动上报都带 --since 当天：只上传当天的增量；扫描 walk 仍是全量历史（约 20 分钟），
+// 超时上限同样放到 30 分钟，可用环境变量覆盖。
+const UPLOAD_TIMEOUT_MS = Number(process.env.OPENTOKEN_UPLOAD_TIMEOUT_MS || 30 * 60 * 1000);
+// 自动上报节奏：距上一次上报结束 ≥2 小时且当前无上传在跑时，自动跑一轮当天定向上传。
+const AUTO_UPLOAD_INTERVAL_MS = Number(process.env.OPENTOKEN_AUTO_UPLOAD_INTERVAL_MS || 2 * 60 * 60 * 1000);
 const BACKGROUND_TICK_INTERVAL_MS = 60 * 1000;
 const LEADERBOARD_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const LEADERBOARD_CANDIDATE_TTL_MS = 5 * 60 * 1000;
@@ -377,10 +385,14 @@ function ensureProxyConfig() {
 
 function run(cmd, args, timeout = 30000) {
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     execFile(cmd, args, { timeout }, (error, stdout, stderr) => {
       resolve({
         ok: !error,
         code: error && typeof error.code === "number" ? error.code : 0,
+        // Windows 下超时被杀时 error.message 不含 timeout 字样，靠 elapsed>=timeout 且 killed 判定，
+        // 让上传失败能如实显示「扫描超时」而不是笼统的 command-failed。
+        timedOut: Boolean(error && error.killed && Date.now() - startedAt >= timeout - 1000),
         stdout: stdout || "",
         stderr: stderr || "",
         message: error ? error.message : "",
@@ -404,13 +416,14 @@ function manualUploadView(joined = false) {
 }
 
 function uploadFailureCode(result) {
+  if (result?.timedOut) return "timeout";
   const message = String(result?.message || "");
   if (/timed out|timeout/i.test(message)) return "timeout";
   if (result?.code) return `exit-${result.code}`;
   return "command-failed";
 }
 
-function triggerBackgroundUpload() {
+function triggerBackgroundUpload({ via = "/api/upload" } = {}) {
   const accountKey = activeScysAccountKey();
   if (backgroundUploadTask) {
     if (backgroundUploadTask.accountKey === accountKey) return manualUploadView(true);
@@ -433,8 +446,9 @@ function triggerBackgroundUpload() {
     detail: "OpenToken 正在扫描并上报",
   };
   saveState();
-  logIslandEvent("manual upload started", { operationId: state.manualUpload.id, via: "/api/upload" });
-  const taskPromise = run(OPENTOKEN, ["upload"], 600000)
+  logIslandEvent("manual upload started", { operationId: state.manualUpload.id, via });
+  // --since 当天：只上传今天的增量；扫描 walk 仍可能耗时 ~20 分钟，超时上限 30 分钟（可配）。
+  const taskPromise = run(OPENTOKEN, ["upload", "--since", localDateString()], UPLOAD_TIMEOUT_MS)
     .then((result) => {
       if (state.manualUpload?.id !== operationId || activeScysAccountKey() !== accountKey) {
         logIslandEvent("ignored manual upload completion after SCYS account change", { operationId });
@@ -454,7 +468,9 @@ function triggerBackgroundUpload() {
         finishedAt: new Date().toISOString(),
         detail: result.ok
           ? (transportAcked ? "SCYS 已确认接收" : "OpenToken 已完成；本轮没有新的可上传数据")
-          : `OpenToken 上报失败（${uploadFailureCode(result)}）`,
+          : uploadFailureCode(result) === "timeout"
+            ? "OpenToken 扫描超时（30 分钟上限）；可加大 OPENTOKEN_UPLOAD_TIMEOUT_MS 或精简 Codex 历史日志后重试"
+            : `OpenToken 上报失败（${uploadFailureCode(result)}）`,
       };
       saveState();
       logIslandEvent("manual upload finished", {
@@ -469,6 +485,17 @@ function triggerBackgroundUpload() {
     });
   backgroundUploadTask = { accountKey, operationId, promise: taskPromise };
   return manualUploadView(false);
+}
+
+// 自动上报：距上一次上报结束 ≥AUTO_UPLOAD_INTERVAL_MS 且当前没有上传在跑时触发，
+// 与 GUI「立即上报」共用 triggerBackgroundUpload（via 标记 auto，面板可见真实终态）。
+// 计划任务 \OpenToken 保持禁用（GUI 关闭时代理不在，daemon 上传必然失败还白烧扫描 CPU），
+// 自动化由这里承担——GUI 经 HKCU Run 开机自启，代理常驻则自动上报常在。
+function maybeTriggerAutoUpload() {
+  if (backgroundUploadTask) return null;
+  const finishedAt = Date.parse(state.manualUpload?.finishedAt || "");
+  if (Number.isFinite(finishedAt) && Date.now() - finishedAt < AUTO_UPLOAD_INTERVAL_MS) return null;
+  return triggerBackgroundUpload({ via: "auto-tick" });
 }
 
 function openExternalUrl(targetUrl) {
@@ -3247,7 +3274,7 @@ async function serviceStatus() {
   return {
     ok: result.ok,
     text,
-    running: result.ok && /running|loaded|已运行|active|Ready|准备|就绪|OpenToken/i.test(text),
+    running: result.ok && /running|loaded|已运行|active|Ready|准备|就绪/i.test(text),
   };
 }
 
@@ -3273,8 +3300,11 @@ async function backgroundTick({ force = false } = {}) {
     leaderboardAutoRefresh.at = 0;
   }
   const jobs = [];
+  maybeTriggerAutoUpload();
   jobs.push(refreshClaudeCodeInBackground(today).catch(() => null));
-  if (localSnapshotNeedsRefresh(today, force)) jobs.push(refreshUsageInBackground(today).catch(() => null));
+  if (FULL_PREVIEW_ENABLED && localSnapshotNeedsRefresh(today, force)) {
+    jobs.push(refreshUsageInBackground(today).catch(() => null));
+  }
   jobs.push(cachedZaiQuota().catch(() => null));
   jobs.push(refreshServiceStatusInBackground().catch(() => null));
   const board = currentLeaderboardSnapshot(today);
