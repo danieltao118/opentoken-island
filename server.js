@@ -751,6 +751,14 @@ function safeNonNegativeNumber(value, field) {
   return number;
 }
 
+// 0.3.5 CLI 的 client_health 里 unhoured 实测为字符串或 null（取证日志 2026-08-17）；
+// 计数语义上等价于数字，宽松归一后转发，其余类型仍拒绝。
+function safeNonNegativeNumberLoose(value, field) {
+  if (value === undefined || value === null) return 0;
+  if (typeof value === "string" && /^\d{1,15}$/.test(value.trim())) return Number(value.trim());
+  return safeNonNegativeNumber(value, field);
+}
+
 function safeOpaqueToken(value, field, minLength = 8, maxLength = 512) {
   if (typeof value !== "string") uploadRejected(`${field} must be a string`);
   const text = value.trim();
@@ -880,7 +888,7 @@ function sanitizeActivityEvent(event, index = 0) {
           hourly: safeInteger(event.payload.ledger.hourly, `events[${index}].payload.ledger.hourly`),
           v2_sessions: safeInteger(event.payload.ledger.v2_sessions, `events[${index}].payload.ledger.v2_sessions`),
         },
-        unhoured: safeInteger(event.payload.unhoured, `events[${index}].payload.unhoured`),
+        unhoured: safeInteger(safeNonNegativeNumberLoose(event.payload.unhoured, `events[${index}].payload.unhoured`), `events[${index}].payload.unhoured`),
       },
     };
   }
