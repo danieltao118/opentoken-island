@@ -751,12 +751,19 @@ function safeNonNegativeNumber(value, field) {
   return number;
 }
 
-// 0.3.5 CLI 的 client_health 里 unhoured 实测为字符串或 null（取证日志 2026-08-17）；
-// 计数语义上等价于数字，宽松归一后转发，其余类型仍拒绝。
-function safeNonNegativeNumberLoose(value, field) {
-  if (value === undefined || value === null) return 0;
-  if (typeof value === "string" && /^\d{1,15}$/.test(value.trim())) return Number(value.trim());
-  return safeNonNegativeNumber(value, field);
+// 0.3.5 CLI 的 client_health 里 unhoured 实测为非常规数字类型（取证日志 2026-08-17，疑似空串）。
+// 信封带 sig 签名，任何字节改写都可能破坏签名，因此这里只校验、**原样透传**：
+// 数字、空串、纯数字串直接放行（保持原始字节），其余类型拒绝。
+function passthroughNonNegativeCount(value, field) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) uploadRejected(`${field} must be non-negative`);
+    return value;
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || /^\d{1,15}$/.test(text)) return value;
+  }
+  uploadRejected(`${field} must be a JSON number or numeric string`);
 }
 
 function safeOpaqueToken(value, field, minLength = 8, maxLength = 512) {
@@ -888,7 +895,7 @@ function sanitizeActivityEvent(event, index = 0) {
           hourly: safeInteger(event.payload.ledger.hourly, `events[${index}].payload.ledger.hourly`),
           v2_sessions: safeInteger(event.payload.ledger.v2_sessions, `events[${index}].payload.ledger.v2_sessions`),
         },
-        unhoured: safeInteger(safeNonNegativeNumberLoose(event.payload.unhoured, `events[${index}].payload.unhoured`), `events[${index}].payload.unhoured`),
+        unhoured: passthroughNonNegativeCount(event.payload.unhoured, `events[${index}].payload.unhoured`),
       },
     };
   }
@@ -3146,6 +3153,9 @@ async function handleUploadProxy(req, res, url) {
       path: redactedPath,
       reason: "schema-rejected",
       shape: payloadShapeSummary(parsed),
+      ...(Array.isArray(parsed?.events) && plainObject(parsed.events[0])
+        ? { event0: payloadShapeSummary(parsed.events[0]) }
+        : {}),
       ...(eventTypes ? { eventTypes } : {}),
       detail: String(error.message || "").slice(0, 200),
     });

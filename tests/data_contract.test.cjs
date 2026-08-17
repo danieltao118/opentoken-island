@@ -192,7 +192,7 @@ assert.equal(hourlyAliasActivity.events[0].type, "hourly");
 assert.equal(hourlyAliasActivity.events[0].hour_utc, "2026-08-17T02");
 assert.equal(hourlyAliasActivity.events[1].started, 1781791963);
 
-// client_health.unhoured 实测可能为字符串/null，宽松归一为数字。
+// client_health.unhoured 实测可能为字符串（含空串）；信封有 sig 签名，只校验、原样透传。
 const looseHealthActivity = sanitizeUploadPayload({
   schema: 2,
   version: "2",
@@ -204,7 +204,7 @@ const looseHealthActivity = sanitizeUploadPayload({
   events: [{ type: "client_health", captured_at: "2026-08-17T03:44:00Z", payload: { scan_ms: 280000, ledger: { usage: 260, hourly: 2000, v2_sessions: 3400 }, unhoured: "3" } }],
   sig: "abcdef0123456789abcdef0123456789",
 });
-assert.equal(looseHealthActivity.events[0].payload.unhoured, 3);
+assert.equal(looseHealthActivity.events[0].payload.unhoured, "3");
 
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
 const safeV2 = sanitizeUploadPayload({
