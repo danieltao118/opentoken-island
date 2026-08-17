@@ -386,7 +386,7 @@ function ensureProxyConfig() {
 function run(cmd, args, timeout = 30000) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    execFile(cmd, args, { timeout }, (error, stdout, stderr) => {
+    execFile(cmd, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
       resolve({
         ok: !error,
         code: error && typeof error.code === "number" ? error.code : 0,
@@ -937,7 +937,8 @@ function sanitizeUploadPayload(payload) {
       device: safeProtocolString(payload.device, "device", 160),
       seq: safeInteger(payload.seq, "seq"),
       sent_at: safeProtocolString(payload.sent_at, "sent_at", 40),
-      tz: safeProtocolString(payload.tz, "tz", 80),
+      // 0.3.5 CLI 夜间批次实测 tz 可为空串（取证日志 2026-08-17）；时区是纯元数据，放行空值。
+      tz: safeProtocolString(payload.tz, "tz", 80, { allowEmpty: true }),
       nonce: safeOpaqueToken(payload.nonce, "nonce"),
       events: payload.events.map(sanitizeActivityEvent),
       sig: safeOpaqueToken(payload.sig, "sig", 16),
