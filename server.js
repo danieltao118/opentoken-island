@@ -751,19 +751,17 @@ function safeNonNegativeNumber(value, field) {
   return number;
 }
 
-// 0.3.5 CLI 的 client_health 里 unhoured 实测为非常规数字类型（取证日志 2026-08-17，疑似空串）。
-// 信封带 sig 签名，任何字节改写都可能破坏签名，因此这里只校验、**原样透传**：
-// 数字、空串、纯数字串直接放行（保持原始字节），其余类型拒绝。
+// 0.3.5 CLI 的 client_health 里 unhoured 类型漂移（取证日志 2026-08-17，数字/空串/未知类型均出现过）。
+// 信封带 sig 签名且转发走原始字节，这里只做"有界原始值"闸门：数字（非负）、布尔、null、
+// ≤64 字符的字符串原样放行；对象/数组/超长字符串拒绝（防夹带敏感内容）。
 function passthroughNonNegativeCount(value, field) {
   if (typeof value === "number") {
     if (!Number.isFinite(value) || value < 0) uploadRejected(`${field} must be non-negative`);
     return value;
   }
-  if (typeof value === "string") {
-    const text = value.trim();
-    if (!text || /^\d{1,15}$/.test(text)) return value;
-  }
-  uploadRejected(`${field} must be a JSON number or numeric string`);
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string" && value.length <= 64) return value;
+  uploadRejected(`${field} must be a bounded primitive counter`);
 }
 
 function safeOpaqueToken(value, field, minLength = 8, maxLength = 512) {
@@ -3154,7 +3152,12 @@ async function handleUploadProxy(req, res, url) {
       reason: "schema-rejected",
       shape: payloadShapeSummary(parsed),
       ...(Array.isArray(parsed?.events) && plainObject(parsed.events[0])
-        ? { event0: payloadShapeSummary(parsed.events[0]) }
+        ? {
+          event0: payloadShapeSummary(parsed.events[0]),
+          ...(plainObject(parsed.events[0].payload)
+            ? { event0Payload: payloadShapeSummary(parsed.events[0].payload) }
+            : {}),
+        }
         : {}),
       ...(eventTypes ? { eventTypes } : {}),
       detail: String(error.message || "").slice(0, 200),
@@ -3196,7 +3199,9 @@ async function handleUploadProxy(req, res, url) {
     }
   }
 
-  const forwardBody = JSON.stringify(forwardPayload);
+  // usage-v1 无签名，代理可补全 claude-code 行后重建转发；其余（activity-v2 信封等）带 sig
+  // 签名，校验通过后必须转发原始字节——任何改写（键序/类型归一）都可能破坏签名。
+  const forwardBody = Array.isArray(payload.rows) ? JSON.stringify(forwardPayload) : body;
   const sequence = Math.max(0, Number(state.uploadSequence || 0)) + 1;
   state.uploadSequence = sequence;
   const uploadRecord = {

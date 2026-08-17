@@ -282,6 +282,11 @@ assert.match(
 );
 assert.match(windowsSupport, /pub fn request_server_shutdown\(port: u16\)/);
 assert.match(serverJs, /\/api\/shutdown/, "Server must expose a local shutdown endpoint for takeover and uninstall");
+assert.match(
+  serverJs,
+  /Array\.isArray\(payload\.rows\) \? JSON\.stringify\(forwardPayload\) : body/,
+  "Signed v2 envelopes must be forwarded byte-exact; only unsigned usage-v1 rows may be rebuilt"
+);
 const officialOpenTokenCandidate = 'path.join(HOME, ".opentoken", "bin", "opentoken.exe")';
 const legacyOpenTokenCandidate = 'path.join(HOME, ".local", "bin", "opentoken.exe")';
 assert.ok(
