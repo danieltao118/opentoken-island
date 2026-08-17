@@ -802,10 +802,12 @@ function sanitizeSessionRow(row, index = 0) {
 // v2 事件流批数据（0.3.5 CLI 实际线格式，取自 upload --dry-run --v2 实测）：
 // 根为 {v2_hourly:[...], v2_sessions:[...]}（真实发送可能另带 schema/nonce/sig 信封）。
 const V2_HOURLY_KEYS = ["hour_utc", "tool", "model", "input", "output", "cache_read", "cache_write"];
+// CLI 发小时桶 "YYYY-MM-DDTHH"；旧契约示例用过完整 ISO，两者都放行。
+const HOUR_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}(:\d{2}:\d{2}(?:\.\d+)?Z?)?$/;
 function sanitizeV2HourlyRow(row, index = 0) {
   exactKeys(row, V2_HOURLY_KEYS, `v2_hourly[${index}]`);
-  const hourUtc = safeProtocolString(row.hour_utc, `v2_hourly[${index}].hour_utc`, 20);
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(hourUtc)) uploadRejected(`v2_hourly[${index}].hour_utc is invalid`);
+  const hourUtc = safeProtocolString(row.hour_utc, `v2_hourly[${index}].hour_utc`, 40);
+  if (!HOUR_UTC_RE.test(hourUtc)) uploadRejected(`v2_hourly[${index}].hour_utc is invalid`);
   return {
     hour_utc: hourUtc,
     tool: safeProtocolString(row.tool, `v2_hourly[${index}].tool`, 80),
@@ -838,20 +840,20 @@ function sanitizeV2SessionRow(row, index = 0) {
 function sanitizeActivityEvent(event, index = 0) {
   if (!plainObject(event)) uploadRejected(`events[${index}] must be an object`);
   const type = safeProtocolString(event.type, `events[${index}].type`, 40);
-  if (type === "usage_hourly") {
-    exactKeys(event, ["type", "tool", "model", "hour_utc", "input", "output", "cache_read", "cache_write"], `events[${index}]`);
-    return {
-      type,
-      tool: safeProtocolString(event.tool, `events[${index}].tool`, 80),
-      model: safeProtocolString(event.model ?? "unknown", `events[${index}].model`, 160),
-      hour_utc: safeProtocolString(event.hour_utc, `events[${index}].hour_utc`, 40),
-      input: safeNonNegativeNumber(event.input, `events[${index}].input`),
-      output: safeNonNegativeNumber(event.output, `events[${index}].output`),
-      cache_read: safeNonNegativeNumber(event.cache_read, `events[${index}].cache_read`),
-      cache_write: safeNonNegativeNumber(event.cache_write, `events[${index}].cache_write`),
-    };
+  // 0.3.5 CLI 实测事件类型是 "hourly"/"session"（取证日志 2026-08-17）；保留旧契约名 usage_hourly 兼容。
+  // 消毒只校验不改写：类型名与字段原样透传，上游 scys 认 CLI 的原始形状。
+  if (type === "usage_hourly" || type === "hourly") {
+    exactKeys(event, ["type", ...V2_HOURLY_KEYS], `events[${index}]`);
+    const { type: _typeTag, ...row } = event;
+    return { type, ...sanitizeV2HourlyRow(row, index) };
   }
   if (type === "session") {
+    // 新形状：started/ended Unix 秒 + date（dry-run 实测）；旧形状：started_at/ended_at ISO 字符串。
+    if ("started" in event || "date" in event) {
+      exactKeys(event, ["type", ...V2_SESSION_KEYS], `events[${index}]`);
+      const { type: _typeTag, ...row } = event;
+      return { type, ...sanitizeV2SessionRow(row, index) };
+    }
     exactKeys(event, ["type", "tool", "session_key", "started_at", "ended_at", "messages", "user_messages", "active_seconds"], `events[${index}]`);
     return {
       type,
@@ -882,7 +884,7 @@ function sanitizeActivityEvent(event, index = 0) {
       },
     };
   }
-  uploadRejected(`events[${index}].type is unsupported`);
+  uploadRejected(`events[${index}].type (${type}) is unsupported`);
 }
 
 function sanitizeUploadPayload(payload) {
@@ -3120,10 +3122,23 @@ async function handleUploadProxy(req, res, url) {
   try {
     payload = sanitizeUploadPayload(parsed);
   } catch (error) {
+    // 事件类型是协议枚举（hourly/session/client_health…），记录下来便于逐层适配；仍不记任何业务值。
+    let eventTypes = "";
+    if (Array.isArray(parsed?.events)) {
+      const seen = [];
+      for (const item of parsed.events) {
+        const raw = typeof item?.type === "string" ? item.type : "?";
+        const tag = /^[A-Za-z0-9_.:-]{1,40}$/.test(raw) ? raw : "?";
+        if (!seen.includes(tag)) seen.push(tag);
+        if (seen.length >= 12) break;
+      }
+      eventTypes = seen.join(",").slice(0, 200);
+    }
     logIslandEvent("blocked upload payload", {
       path: redactedPath,
       reason: "schema-rejected",
       shape: payloadShapeSummary(parsed),
+      ...(eventTypes ? { eventTypes } : {}),
       detail: String(error.message || "").slice(0, 200),
     });
     return json(res, 400, { ok: false, error: String(error.message || "Upload payload rejected") });

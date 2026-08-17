@@ -173,6 +173,25 @@ const numericSchemaActivity = sanitizeUploadPayload({
 assert.equal(numericSchemaActivity.schema, 2);
 assert.equal(numericSchemaActivity.version, "2");
 
+// 0.3.5 CLI 实测事件类型名：hourly / session（started/ended Unix 秒 + date 字段）。
+const hourlyAliasActivity = sanitizeUploadPayload({
+  schema: 2,
+  version: "2",
+  device: "0123456789abcdef",
+  seq: 199,
+  sent_at: "2026-08-17T03:00:00.000Z",
+  tz: "",
+  nonce: "abcdef0123456789",
+  events: [
+    { type: "hourly", hour_utc: "2026-08-17T02", tool: "codex", model: "gpt-5.6-sol", input: 10, output: 20, cache_read: 30, cache_write: 40 },
+    { type: "session", date, tool: "codex", session_key: "0123456789abcdef0123456789abcdef01234567", started: 1781791963, ended: 1781792000, messages: 5, user_messages: 2, active_seconds: 120 },
+  ],
+  sig: "abcdef0123456789abcdef0123456789",
+});
+assert.equal(hourlyAliasActivity.events[0].type, "hourly");
+assert.equal(hourlyAliasActivity.events[0].hour_utc, "2026-08-17T02");
+assert.equal(hourlyAliasActivity.events[1].started, 1781791963);
+
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
 const safeV2 = sanitizeUploadPayload({
   schema: "opentoken.activity.v2",
