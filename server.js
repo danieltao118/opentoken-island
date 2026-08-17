@@ -751,16 +751,29 @@ function safeNonNegativeNumber(value, field) {
   return number;
 }
 
-// 0.3.5 CLI 的 client_health 里 unhoured 类型漂移（取证日志 2026-08-17，数字/空串/未知类型均出现过）。
-// 信封带 sig 签名且转发走原始字节，这里只做"有界原始值"闸门：数字（非负）、布尔、null、
-// ≤64 字符的字符串原样放行；对象/数组/超长字符串拒绝（防夹带敏感内容）。
+// 0.3.5 CLI 的 client_health.unhoured 实测是数组（空 = 没有未入桶会话，取证日志 2026-08-17）。
+// 信封带 sig 签名且转发走原始字节，这里只做有界闸门：数字（非负）/布尔/null/短字符串原样放行；
+// 数组放行但限长、元素限有界原始值（防夹带敏感内容）；对象与其他类型拒绝。
 function passthroughNonNegativeCount(value, field) {
   if (typeof value === "number") {
     if (!Number.isFinite(value) || value < 0) uploadRejected(`${field} must be non-negative`);
     return value;
   }
   if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "string" && value.length <= 64) return value;
+  if (typeof value === "string") {
+    if (value.length <= 64) return value;
+    uploadRejected(`${field} string is too long`);
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 10000) uploadRejected(`${field} array is too large`);
+    for (const item of value) {
+      if (typeof item === "string" && item.length > 160) uploadRejected(`${field} entries must be bounded`);
+      if (item !== null && !["string", "number", "boolean"].includes(typeof item)) {
+        uploadRejected(`${field} entries must be primitives`);
+      }
+    }
+    return value;
+  }
   uploadRejected(`${field} must be a bounded primitive counter`);
 }
 

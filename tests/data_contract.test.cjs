@@ -192,7 +192,7 @@ assert.equal(hourlyAliasActivity.events[0].type, "hourly");
 assert.equal(hourlyAliasActivity.events[0].hour_utc, "2026-08-17T02");
 assert.equal(hourlyAliasActivity.events[1].started, 1781791963);
 
-// client_health.unhoured 实测可能为字符串（含空串）；信封有 sig 签名，只校验、原样透传。
+// client_health.unhoured 实测是数组（空=无未入桶会话，2026-08-17 取证）；带 sig 只校验、原样透传。
 const looseHealthActivity = sanitizeUploadPayload({
   schema: 2,
   version: "2",
@@ -201,10 +201,25 @@ const looseHealthActivity = sanitizeUploadPayload({
   sent_at: "2026-08-17T04:00:00.000Z",
   tz: "",
   nonce: "abcdef0123456789",
-  events: [{ type: "client_health", captured_at: "2026-08-17T03:44:00Z", payload: { scan_ms: 280000, ledger: { usage: 260, hourly: 2000, v2_sessions: 3400 }, unhoured: "3" } }],
+  events: [{ type: "client_health", captured_at: "2026-08-17T03:44:00Z", payload: { scan_ms: 280000, ledger: { usage: 260, hourly: 2000, v2_sessions: 3400 }, unhoured: [] } }],
   sig: "abcdef0123456789abcdef0123456789",
 });
-assert.equal(looseHealthActivity.events[0].payload.unhoured, "3");
+assert.deepEqual(looseHealthActivity.events[0].payload.unhoured, []);
+// 字符串与数字形态也放行（透传不转换）。
+const looseHealthString = sanitizeUploadPayload({
+  schema: 2, version: "2", device: "0123456789abcdef", seq: 201,
+  sent_at: "2026-08-17T04:00:00.000Z", tz: "", nonce: "abcdef0123456789",
+  events: [{ type: "client_health", captured_at: "2026-08-17T03:44:00Z", payload: { scan_ms: 1, ledger: { usage: 1, hourly: 1, v2_sessions: 1 }, unhoured: "3" } }],
+  sig: "abcdef0123456789abcdef0123456789",
+});
+assert.equal(looseHealthString.events[0].payload.unhoured, "3");
+// 夹带敏感内容的数组元素仍必须拒绝。
+assert.throws(() => sanitizeUploadPayload({
+  schema: 2, version: "2", device: "0123456789abcdef", seq: 202,
+  sent_at: "2026-08-17T04:00:00.000Z", tz: "", nonce: "abcdef0123456789",
+  events: [{ type: "client_health", captured_at: "2026-08-17T03:44:00Z", payload: { scan_ms: 1, ledger: { usage: 1, hourly: 1, v2_sessions: 1 }, unhoured: [{ secret: "prompt=x" }] } }],
+  sig: "abcdef0123456789abcdef0123456789",
+}), /upload payload rejected/i);
 
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
 const safeV2 = sanitizeUploadPayload({
