@@ -1,5 +1,6 @@
 const http = require("http");
 const https = require("https");
+const tls = require("tls");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -52,6 +53,14 @@ const DAEMON_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const DAEMON_LEDGER_GRACE_HOUR = 10;
 const DNS_FALLBACK_TTL_MS = 10 * 60 * 1000;
 const dnsFallbackCache = new Map();
+// 被墙端点（chatgpt.com 等）node 直连必败：直连与 DNS 兜底都失败后，走本地 HTTP 代理的
+// CONNECT 隧道重试（Clash 常驻 7892）。国内端点直连即成功，永远不会触发此兜底。
+// 设 OPENTOKEN_UPSTREAM_PROXY=off 可禁用；未设置时默认本机 7892。
+const UPSTREAM_PROXY_URL = (() => {
+  const raw = (process.env.OPENTOKEN_UPSTREAM_PROXY || "").trim();
+  if (/^(off|no|disabled)$/i.test(raw)) return "";
+  return raw || "http://127.0.0.1:7892";
+})();
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -824,20 +833,110 @@ function requestTextOnce(method, targetUrl, body = "", headers = {}, timeout = 3
   });
 }
 
+function tunnelViaHttpProxy(proxyUrl, targetHost, targetPort, timeout = 8000) {
+  return new Promise((resolve, reject) => {
+    let proxy;
+    try {
+      proxy = new URL(proxyUrl);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const req = http.request({
+      host: proxy.hostname,
+      port: Number(proxy.port || 80),
+      method: "CONNECT",
+      path: `${targetHost}:${targetPort}`,
+      headers: { host: `${targetHost}:${targetPort}` },
+      timeout,
+    });
+    req.on("connect", (res, socket) => {
+      if (res.statusCode === 200) {
+        resolve(socket);
+      } else {
+        socket.destroy();
+        reject(new Error(`proxy CONNECT failed with status ${res.statusCode}`));
+      }
+    });
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy(new Error("proxy CONNECT timed out"));
+    });
+    req.end();
+  });
+}
+
+// 复用 requestTextOnce 的响应形状，但 TCP 层来自代理 CONNECT 隧道（TLS 仍对目标域名握手）。
+// 注意 https.request 没有 socket 选项——必须经 createConnection 注入已握手的 TLSSocket。
+function requestTextOnceViaProxy(proxyUrl, method, target, body = "", headers = {}, timeout = 30000) {
+  return tunnelViaHttpProxy(proxyUrl, target.hostname, Number(target.port || 443), Math.min(timeout, 8000)).then(
+    (socket) =>
+      new Promise((resolve) => {
+        const requestHeaders = { ...headers };
+        if (body && !requestHeaders["content-length"]) {
+          requestHeaders["content-length"] = Buffer.byteLength(body);
+        }
+        const req = https.request(
+          target,
+          {
+            method,
+            headers: requestHeaders,
+            timeout,
+            // agent 必须保持未设置：node 只在"无 agent + createConnection"组合下才用自定义连接，
+            // agent:false 会新建默认 Agent 并把隧道 socket 无视掉（连接又会走直连）。
+            createConnection: () => tls.connect({ socket, servername: target.hostname }),
+          },
+          (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              resolve({
+                ok: res.statusCode >= 200 && res.statusCode < 300,
+                status: res.statusCode,
+                headers: res.headers,
+                body: text,
+                json: safeJson(text),
+              });
+            });
+          }
+        );
+        req.on("error", (error) => {
+          resolve({ ok: false, status: 0, headers: {}, body: "", json: null, error: error.message });
+        });
+        req.on("timeout", () => {
+          req.destroy(new Error("Request timed out"));
+        });
+        if (body) req.write(body);
+        req.end();
+      }),
+    (error) => ({ ok: false, status: 0, headers: {}, body: "", json: null, error: error.message })
+  );
+}
+
 async function requestText(method, targetUrl, body = "", headers = {}, timeout = 30000) {
   const target = new URL(targetUrl);
-  const first = await requestTextOnce(method, target, body, headers, timeout);
-  if (first.ok || !/ENOTFOUND|EAI_AGAIN/i.test(String(first.error || ""))) return first;
-
-  const fallbackIp = resolveHostViaPowerShell(target.hostname);
-  if (!fallbackIp) return first;
-
-  const fallbackUrl = new URL(target.href);
-  fallbackUrl.hostname = fallbackIp;
-  const fallbackHeaders = { ...headers, host: target.host };
-  return requestTextOnce(method, fallbackUrl, body, fallbackHeaders, timeout, {
-    servername: target.hostname,
-  });
+  let first = await requestTextOnce(method, target, body, headers, timeout);
+  if (first.ok) return first;
+  if (/ENOTFOUND|EAI_AGAIN/i.test(String(first.error || ""))) {
+    const fallbackIp = resolveHostViaPowerShell(target.hostname);
+    if (fallbackIp) {
+      const fallbackUrl = new URL(target.href);
+      fallbackUrl.hostname = fallbackIp;
+      const viaDns = await requestTextOnce(method, fallbackUrl, body, { ...headers, host: target.host }, timeout, {
+        servername: target.hostname,
+      });
+      if (viaDns.ok) return viaDns;
+      first = viaDns;
+    }
+  }
+  // 直连与 DNS 兜底都失败：最后尝试本地代理隧道（被墙端点的常规恢复路径）。
+  if (UPSTREAM_PROXY_URL && target.protocol === "https:") {
+    const viaProxy = await requestTextOnceViaProxy(UPSTREAM_PROXY_URL, method, target, body, headers, timeout);
+    if (viaProxy.ok) return viaProxy;
+    first = { ...first, proxyError: String(viaProxy.error || `status ${viaProxy.status}`) };
+  }
+  return first;
 }
 
 function retryableNetworkFailure(result) {
@@ -3441,7 +3540,11 @@ async function fetchCodexQuota(auth) {
   const usageResp = await requestTextWithRetry("GET", CODEX_USAGE_URL, "", headers, 15000, 2);
   if (usageResp.status === 401 || usageResp.status === 403) return codexQuotaUnavailable("auth");
   if (!usageResp.ok || !plainObject(usageResp.json)) {
-    logIslandEvent("codex quota refresh failed", { status: Number(usageResp.status || 0) });
+    logIslandEvent("codex quota refresh failed", {
+      status: Number(usageResp.status || 0),
+      error: String(usageResp.error || "").slice(0, 120),
+      proxyError: String(usageResp.proxyError || "").slice(0, 120),
+    });
     return codexQuotaUnavailable("read");
   }
   return buildCodexQuotaFeed(usageResp.json);
