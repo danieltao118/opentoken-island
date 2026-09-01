@@ -11,15 +11,15 @@
     .panel{position:relative;width:100%;height:100%;min-height:0;padding:14px;border-radius:24px;background:linear-gradient(145deg,rgba(32,34,38,.72),rgba(18,18,20,.82));border:1px solid var(--line);box-shadow:0 30px 90px rgba(0,0,0,.46),inset 0 1px 0 rgba(255,255,255,.14);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);overflow:hidden;isolation:isolate}
     .panel::before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,rgba(255,255,255,.10),transparent 36%);opacity:.55;z-index:0}
     .symbol-bg{position:absolute;right:-18px;bottom:-24px;width:122px;height:122px;overflow:hidden;opacity:.14;z-index:0;pointer-events:none;mix-blend-mode:screen;mask-image:linear-gradient(to top,#000 6%,rgba(0,0,0,.74) 58%,transparent);-webkit-mask-image:linear-gradient(to top,#000 6%,rgba(0,0,0,.74) 58%,transparent)}
-    .symbol-bg img{height:122px;width:477px;object-fit:contain;object-position:left center;display:block}.content{position:relative;z-index:1;height:100%;display:flex;flex-direction:column;overflow-y:auto;padding-right:2px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.title{margin:0;font-size:15px;font-weight:760}.sub{margin:4px 0 0;color:var(--muted);font-size:12px;max-width:278px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.live{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:99px;background:rgba(48,209,88,.12);color:#77df8b;font-size:12px}.dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(48,209,88,.14)}
+    .symbol-bg img{height:122px;width:477px;object-fit:contain;object-position:left center;display:block}.content{position:relative;z-index:1;height:100%;display:flex;flex-direction:column;overflow-y:auto;padding-right:2px}.head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.head>div:first-child{min-width:0;flex:1}.title{margin:0;font-size:15px;font-weight:760}.sub{margin:4px 0 0;color:var(--muted);font-size:12px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.live{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:99px;background:rgba(48,209,88,.12);color:#77df8b;font-size:12px}.dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(48,209,88,.14)}
     .actions{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;margin-bottom:10px}.btn{height:34px;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:7px;padding:0 12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08);font-size:12px;font-weight:700}.btn.primary{background:var(--blue);color:white;border-color:rgba(10,132,255,.6);box-shadow:0 12px 34px rgba(10,132,255,.22)}.btn.active{background:rgba(255,159,10,.14);border-color:rgba(255,159,10,.24);color:#ffd798}.btn.icon{width:34px;padding:0}.btn svg{width:15px;height:15px}
     .hero{display:grid;grid-template-columns:1fr auto;align-items:end;gap:12px;padding:14px;border-radius:18px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.09);margin-bottom:10px}.label{margin:0 0 6px;color:var(--muted);font-size:12px}.value{margin:0;font-size:32px;line-height:1;font-weight:780;font-variant-numeric:tabular-nums}.rank{display:grid;place-items:center;min-width:66px;height:42px;padding:0 10px;border-radius:13px;background:rgba(10,132,255,.18);color:#8cc7ff;font-size:18px;font-weight:820;font-variant-numeric:tabular-nums}
-    .facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}.fact{min-width:0;border-radius:16px;padding:9px 10px;background:rgba(255,255,255,.052);border:1px solid rgba(255,255,255,.075)}.fact span{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fact strong{display:block;margin-top:4px;font-size:18px;line-height:1.05;font-weight:820;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fact em{display:block;margin-top:5px;color:rgba(247,247,248,.56);font-style:normal;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar{display:block;height:8px;border-radius:99px;background:rgba(255,255,255,.10);overflow:hidden}.bar i{display:block;height:100%;width:72%;border-radius:inherit;background:linear-gradient(90deg,var(--blue),#64d2ff)}.tools{display:grid;gap:6px;margin-bottom:10px}.tool{display:grid;grid-template-columns:82px 1fr 66px;align-items:center;gap:8px;padding:7px 8px;border-radius:12px;background:rgba(255,255,255,.045);font-size:12px}.tool .bar{height:7px}.tool-value{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}.trend-panel{margin-top:auto;display:grid;gap:8px;padding:10px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.075);min-height:0}.trend-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.trend-title{font-size:13px;font-weight:780;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-note{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.trend-card{min-width:0;padding:8px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06)}.trend-card strong{display:flex;justify-content:space-between;gap:6px;font-size:11px;line-height:1.1}.trend-total{color:#8ee59e;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-bars{height:38px;margin-top:7px;display:flex;align-items:flex-end;gap:2px}.trend-bars i{flex:1;min-width:2px;min-height:3px;border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#8ee59e,var(--blue));opacity:.9}.trend-empty{height:38px;margin-top:7px;display:grid;place-items:center;color:var(--muted);font-size:11px}.audit-line{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .quotas{display:block;margin-bottom:10px}.quota{min-width:0;padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);font-size:12px;overflow:hidden}.quota-card-wide{width:100%}.quota-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px}.quota strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-state{min-width:34px;text-align:right;color:rgba(255,255,255,.72);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-summary{display:flex;align-items:center;gap:7px;margin-top:5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-plan{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:99px;background:rgba(48,209,88,.12);color:#8ee59e;font-size:11px;font-weight:760}.quota-items{display:grid;gap:8px;margin-top:9px}.quota-item{min-width:0;padding-top:8px;border-top:1px solid rgba(255,255,255,.09)}.quota-line{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:10px}.quota-name{font-size:13px;font-weight:760;color:rgba(255,255,255,.92);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-remaining{font-size:17px;line-height:1;font-weight:830;font-variant-numeric:tabular-nums;color:#8ee59e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-detail{display:block;margin-top:5px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota .bar{height:6px;margin-top:6px}
-    .hero{padding:10px 12px;margin-bottom:8px}.value{font-size:28px}.rank{min-width:70px;height:42px;border-radius:13px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}.rank span{font-size:9px;font-weight:700;letter-spacing:.08em;color:rgba(140,199,255,.72)}.rank strong{font-size:17px;line-height:1;font-weight:820}.facts{gap:6px;margin-bottom:8px}.fact{padding:7px 8px;border-radius:13px}.fact strong{margin-top:3px;font-size:16px}.fact em{display:block}.quotas{margin-bottom:8px}.quota{padding:8px 10px;border-radius:14px}.quota-summary{margin-top:3px}.quota-items{gap:5px;margin-top:7px}.quota-item{padding-top:6px}.quota-detail{margin-top:3px;font-size:11px}.quota .bar{height:5px;margin-top:5px}.tools{gap:4px;margin-bottom:8px}.tool{grid-template-columns:82px 1fr 62px;padding:5px 7px;border-radius:10px}.trend-panel{margin-top:0;gap:7px;padding:9px;min-height:150px}.trend-head{grid-template-columns:minmax(0,1fr) auto}.trend-tabs{display:flex;gap:4px;padding:2px;border-radius:999px;background:rgba(255,255,255,.06)}.trend-tab{height:28px;min-width:38px;padding:0 9px;border-radius:999px;background:transparent;color:var(--muted);font-size:11px;font-weight:760}.trend-tab.active{background:rgba(255,255,255,.16);color:#fff}.trend-tab:focus-visible,.trend-bar:focus-visible{outline:2px solid #64d2ff;outline-offset:1px}.trend-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.trend-stat{min-width:0;padding:5px 6px;border-radius:10px;background:rgba(255,255,255,.045)}.trend-stat span,.trend-detail{display:block;color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-stat strong{display:block;margin-top:2px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-bars{height:48px;margin-top:0;display:flex;align-items:stretch;gap:2px}.trend-bar{flex:1;min-width:0;height:100%;display:grid;grid-template-rows:1fr 10px;align-items:end;gap:2px;padding:0;background:transparent}.trend-bar i{display:block;width:100%;height:max(2px,var(--h));border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#8ee59e,var(--blue));opacity:.9}.trend-bar.empty i{height:2px;background:rgba(255,255,255,.18);opacity:.55}.trend-bar.active i{box-shadow:0 0 0 1px rgba(255,255,255,.38),0 0 14px rgba(10,132,255,.26);opacity:1}.trend-bar span{height:10px;color:rgba(247,247,248,.48);font-size:9px;text-align:center;white-space:nowrap;overflow:hidden}.trend-empty{min-height:48px;height:auto;margin:0;padding:8px;display:grid;place-items:center;text-align:center;white-space:normal;line-height:1.45}.content{scrollbar-gutter:stable}.content::-webkit-scrollbar{width:4px}.content::-webkit-scrollbar-thumb{border-radius:99px;background:rgba(255,255,255,.18)}.audit-line{display:none}
+    .facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}.sync-lights{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin:0 4px 0 auto}.sync-light{position:relative;display:inline-flex;align-items:center;gap:4px;height:22px;padding:0;border:0;background:transparent;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.04em;cursor:default}.sync-light i{width:7px;height:7px;border-radius:50%;background:rgba(247,247,248,.28)}.sync-light[data-status="ok"] i{background:var(--green);box-shadow:0 0 0 3px rgba(48,209,88,.16)}.sync-light[data-status="waiting"] i{background:#ffd60a;box-shadow:0 0 0 3px rgba(255,214,10,.16)}.sync-light[data-status="blocked"] i{background:#ff453a;box-shadow:0 0 0 3px rgba(255,69,58,.16)}.sync-light[data-status="outside-window"] i{background:rgba(247,247,248,.42)}.sync-light:hover::after,.sync-light:focus-visible::after{content:attr(data-tip);position:absolute;top:calc(100% + 7px);left:0;z-index:8;min-width:168px;max-width:240px;padding:8px 10px;border-radius:10px;background:#1c1d21;border:1px solid rgba(255,255,255,.14);color:#f7f7f8;font-size:11px;font-weight:500;letter-spacing:0;line-height:1.45;white-space:normal;text-align:left;pointer-events:none}.sync-light:nth-child(n+3):hover::after,.sync-light:nth-child(n+3):focus-visible::after{left:auto;right:0}.fact{min-width:0;border-radius:16px;padding:9px 10px;background:rgba(255,255,255,.052);border:1px solid rgba(255,255,255,.075)}.fact span{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fact strong{display:block;margin-top:4px;font-size:18px;line-height:1.05;font-weight:820;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fact em{display:block;margin-top:5px;color:rgba(247,247,248,.56);font-style:normal;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar{display:block;height:8px;border-radius:99px;background:rgba(255,255,255,.10);overflow:hidden}.bar i{display:block;height:100%;width:72%;border-radius:inherit;background:linear-gradient(90deg,var(--blue),#64d2ff)}.tools{display:grid;gap:6px;margin-bottom:10px}.tool{display:grid;grid-template-columns:82px 1fr 66px;align-items:center;gap:8px;padding:7px 8px;border-radius:12px;background:rgba(255,255,255,.045);font-size:12px}.tool .bar{height:7px}.tool-value{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}.trend-panel{margin-top:auto;display:grid;gap:8px;padding:10px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.075);min-height:0}.trend-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.trend-title{font-size:13px;font-weight:780;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-note{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.trend-card{min-width:0;padding:8px;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06)}.trend-card strong{display:flex;justify-content:space-between;gap:6px;font-size:11px;line-height:1.1}.trend-total{color:#8ee59e;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-bars{height:38px;margin-top:7px;display:flex;align-items:flex-end;gap:2px}.trend-bars i{flex:1;min-width:2px;min-height:3px;border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#8ee59e,var(--blue));opacity:.9}.trend-empty{height:38px;margin-top:7px;display:grid;place-items:center;color:var(--muted);font-size:11px}.audit-line{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .quotas{display:grid;gap:8px;margin-bottom:10px}.quota{min-width:0;padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);font-size:12px;overflow:hidden}.quota-card-wide{width:100%}.quota-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px}.quota strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-state{min-width:34px;text-align:right;color:rgba(255,255,255,.72);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-summary{display:flex;align-items:center;gap:7px;margin-top:5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-plan{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:99px;background:rgba(48,209,88,.12);color:#8ee59e;font-size:11px;font-weight:760}.quota-items{display:grid;gap:8px;margin-top:9px}.quota-item{min-width:0;padding-top:8px;border-top:1px solid rgba(255,255,255,.09)}.quota-line{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:10px}.quota-name{font-size:13px;font-weight:760;color:rgba(255,255,255,.92);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-remaining{font-size:17px;line-height:1;font-weight:830;font-variant-numeric:tabular-nums;color:#8ee59e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-detail{display:block;margin-top:5px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota .bar{height:6px;margin-top:6px}
+    .hero{padding:10px 12px;margin-bottom:8px}.value{font-size:28px}.rank{min-width:70px;height:42px;border-radius:13px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}.rank span{font-size:9px;font-weight:700;letter-spacing:.08em;color:rgba(140,199,255,.72)}.rank strong{font-size:17px;line-height:1;font-weight:820}.rank.stale{background:rgba(255,255,255,.08);color:rgba(247,247,248,.72)}.facts{gap:6px;margin-bottom:8px}.fact{padding:7px 8px;border-radius:13px}.fact strong{margin-top:3px;font-size:16px}.fact em{display:block}.quotas{margin-bottom:8px}.quota{padding:8px 10px;border-radius:14px}.quota-summary{margin-top:3px}.quota-items{gap:5px;margin-top:7px}.quota-item{padding-top:6px}.quota-detail{margin-top:3px;font-size:11px}.quota .bar{height:5px;margin-top:5px}.tools{gap:4px;margin-bottom:8px}.tool{grid-template-columns:82px 1fr 62px;padding:5px 7px;border-radius:10px}.trend-panel{margin-top:0;gap:7px;padding:9px;min-height:150px}.trend-head{grid-template-columns:minmax(0,1fr) auto}.trend-tabs{display:flex;gap:4px;padding:2px;border-radius:999px;background:rgba(255,255,255,.06)}.trend-tab{height:28px;min-width:38px;padding:0 9px;border-radius:999px;background:transparent;color:var(--muted);font-size:11px;font-weight:760}.trend-tab.active{background:rgba(255,255,255,.16);color:#fff}.trend-tab:focus-visible,.trend-bar:focus-visible{outline:2px solid #64d2ff;outline-offset:1px}.trend-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.trend-stat{min-width:0;padding:5px 6px;border-radius:10px;background:rgba(255,255,255,.045)}.trend-stat span,.trend-detail{display:block;color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-stat strong{display:block;margin-top:2px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.trend-bars{height:48px;margin-top:0;display:flex;align-items:stretch;gap:2px}.trend-bar{flex:1;min-width:0;height:100%;display:grid;grid-template-rows:1fr 10px;align-items:end;gap:2px;padding:0;background:transparent}.trend-bar i{display:block;width:100%;height:max(2px,var(--h));border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#8ee59e,var(--blue));opacity:.9}.trend-bar.empty i{height:2px;background:rgba(255,255,255,.18);opacity:.55}.trend-bar.active i{box-shadow:0 0 0 1px rgba(255,255,255,.38),0 0 14px rgba(10,132,255,.26);opacity:1}.trend-bar span{height:10px;color:rgba(247,247,248,.48);font-size:9px;text-align:center;white-space:nowrap;overflow:hidden}.trend-empty{min-height:48px;height:auto;margin:0;padding:8px;display:grid;place-items:center;text-align:center;white-space:normal;line-height:1.45}.content{scrollbar-gutter:stable}.content::-webkit-scrollbar{width:4px}.content::-webkit-scrollbar-thumb{border-radius:99px;background:rgba(255,255,255,.18)}.audit-line{display:none}
     .domain-block{margin-bottom:8px;padding:8px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.065)}.domain-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.domain-head strong{font-size:12px}.domain-head span{color:var(--muted);font-size:10px;text-align:right}.domain-block .tools{margin-bottom:0}.board-tools .bar i{background:linear-gradient(90deg,#d8bf85,#ff9f0a)}.board-tools .tool-value{color:#f0d49a}.trend-panel{margin-bottom:8px}.identity-manage{padding:0;border:0;background:transparent;color:#8cc7ff;font:inherit;text-decoration:underline;text-underline-offset:2px}.identity-bind{display:grid;gap:7px;margin-bottom:8px;padding:8px;border-radius:14px;background:rgba(10,132,255,.09);border:1px solid rgba(100,210,255,.18)}.identity-bind[hidden]{display:none}.identity-copy{display:grid;gap:2px}.identity-copy strong{font-size:12px}.identity-copy span{color:var(--muted);font-size:10px;line-height:1.4}.identity-controls{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:5px}.identity-controls select{min-width:0;height:30px;padding:0 7px;border:1px solid rgba(255,255,255,.12);border-radius:9px;background:#202126;color:#f7f7f8;font-size:11px}.identity-controls button{height:30px;padding:0 8px;border-radius:9px;background:rgba(255,255,255,.11);color:#fff;font-size:11px}.identity-controls button.primary{background:var(--blue)}
   </style>
-</head><body><main class="panel"><span class="symbol-bg"><img src="./assets/scys/icon_topnav.png" alt=""></span><div class="content"><header class="head"><div><p class="title">今日 OpenToken</p><p id="serviceText" class="sub" role="status" aria-live="polite">正在读取本地快照...</p></div><span class="live"><span class="dot"></span>live</span></header><div class="actions"><button id="uploadButton" class="btn primary"><i data-lucide="upload-cloud"></i><span id="uploadLabel">立即上报</span></button><button id="pauseButton" class="btn" title="暂停面板自动刷新，不影响后台统计和上报"><i data-lucide="pause"></i><span id="pauseLabel">暂停刷新</span></button><button id="leaderboardButton" class="btn icon" aria-label="打开真实榜单" title="用默认浏览器打开生财有术 Token 消耗排行榜"><i data-lucide="external-link"></i></button><button id="logButton" class="btn icon" aria-label="打开日志" title="打开本地事件日志"><i data-lucide="file-text"></i></button></div><section class="hero" aria-label="今日本机实际 Token 与榜单排名"><div><p id="totalCaption" class="label">实际 Token（本机）</p><p id="totalValue" class="value">--</p></div><div class="rank"><span>总榜</span><strong id="rankValue">#--</strong></div></section><section id="usageTrend" class="trend-panel" aria-label="GLM 消耗趋势"></section><section class="domain-block" aria-label="本机工具实际 Token"><div class="domain-head"><strong>本机工具</strong><span id="localUsageState">等待本地统计</span></div><section id="toolList" class="tools"></section></section><section id="rankFacts" class="facts" aria-label="SCYS 榜单指标"></section><section id="identityBind" class="identity-bind" aria-label="榜单账号绑定" hidden><div class="identity-copy"><strong id="identityTitle">榜单账号未匹配</strong><span id="identityDetail">请选择一次公开榜单账号；绑定只保存在本机。</span></div><div class="identity-controls"><select id="identitySelect" aria-label="选择公开榜单账号" disabled><option value="">请先加载账号列表</option></select><button id="identityLoadButton" type="button">加载</button><button id="identityBindButton" class="primary" type="button" disabled>确认</button></div></section><section class="domain-block" aria-label="SCYS 榜单工具构成"><div class="domain-head"><strong>榜单工具构成</strong><span>同账号多电脑 · 榜单分 · <button id="identityManageButton" class="identity-manage" type="button">绑定账号</button></span></div><section id="leaderboardToolList" class="tools board-tools"></section></section><section id="quotaList" class="quotas" aria-label="GLM 额度"></section></div></main><script>
+</head><body><main class="panel"><span class="symbol-bg"><img src="./assets/scys/icon_topnav.png" alt=""></span><div class="content"><header class="head"><div><p class="title">今日 OpenToken</p><p id="serviceText" class="sub" role="status" aria-live="polite">正在读取本地快照...</p></div><section id="syncFacts" class="sync-lights" aria-label="同步状态灯"></section><span class="live"><span class="dot"></span>live</span></header><div class="actions"><button id="uploadButton" class="btn primary"><i data-lucide="upload-cloud"></i><span id="uploadLabel">立即上报</span></button><button id="pauseButton" class="btn" title="暂停面板自动刷新，不影响后台统计和上报"><i data-lucide="pause"></i><span id="pauseLabel">暂停刷新</span></button><button id="leaderboardButton" class="btn icon" aria-label="打开真实榜单" title="用默认浏览器打开生财有术 Token 消耗排行榜"><i data-lucide="external-link"></i></button><button id="logButton" class="btn icon" aria-label="打开日志" title="打开本地事件日志"><i data-lucide="file-text"></i></button></div><section class="hero" aria-label="今日榜单分与总榜名次"><div><p id="totalCaption" class="label">榜单分</p><p id="totalValue" class="value">--</p></div><div class="rank"><span id="rankCaption">总榜</span><strong id="rankValue">#--</strong></div></section><section id="usageTrend" class="trend-panel" aria-label="GLM 消耗趋势"></section><section class="domain-block" aria-label="本机工具实际 Token"><div class="domain-head"><strong>本机工具</strong><span id="localUsageState">等待本地统计</span></div><section id="toolList" class="tools"></section></section><section id="rankFacts" class="facts" aria-label="SCYS 榜单指标"></section><section id="identityBind" class="identity-bind" aria-label="榜单账号绑定" hidden><div class="identity-copy"><strong id="identityTitle">榜单账号未匹配</strong><span id="identityDetail">请选择一次公开榜单账号；绑定只保存在本机。</span></div><div class="identity-controls"><select id="identitySelect" aria-label="选择公开榜单账号" disabled><option value="">请先加载账号列表</option></select><button id="identityLoadButton" type="button">加载</button><button id="identityBindButton" class="primary" type="button" disabled>确认</button></div></section><section class="domain-block" aria-label="SCYS 榜单工具构成"><div class="domain-head"><strong>榜单工具构成</strong><span>同账号多电脑 · 榜单分 · <button id="identityManageButton" class="identity-manage" type="button">绑定账号</button></span></div><section id="leaderboardToolList" class="tools board-tools"></section></section><section id="quotaList" class="quotas" aria-label="模型额度"></section></div></main><script>
 const API = '/api';
 const $ = (selector) => document.querySelector(selector);
 let refreshPaused = false;
@@ -28,6 +28,9 @@ let lastTrendPayload = null;
 let loadController = null;
 let loadSequence = 0;
 let manualUploadRunning = false;
+let syncPolling = false;
+let lastHeroScore = '--';
+let lastLocalUsage = '--';
 let identityPanelOpen = false;
 let identityAccount = '';
 let lastIdentityPayload = null;
@@ -60,24 +63,96 @@ function quotaList() {
   return list;
 }
 
+function defaultQuotaFeed(key) {
+  const defaults = {
+    glm: {
+      key: 'glm',
+      label: 'GLM / Z.ai',
+      valueLabel: '--',
+      detail: '等待额度上报',
+      status: 'waiting',
+      items: [{
+        label: '5小时额度',
+        valueLabel: '--',
+        detail: '等待智谱额度数据 · 等待重置时间',
+        pct: 4
+      }, {
+        label: 'MCP额度',
+        valueLabel: '--',
+        detail: '等待智谱 MCP 数据 · 等待重置时间',
+        pct: 4
+      }]
+    },
+    cursor: {
+      key: 'cursor',
+      label: 'Cursor',
+      valueLabel: '--',
+      detail: '等待 Cursor 额度',
+      status: 'waiting',
+      items: [{
+        label: 'Cursor 模型',
+        usedLabel: '--',
+        remainingLabel: '--',
+        detail: '含 Grok / Composer · 等待重置时间',
+        pct: 4
+      }, {
+        label: '其他模型',
+        usedLabel: '--',
+        remainingLabel: '--',
+        detail: '至少 $400 API · 等待重置时间',
+        pct: 4
+      }]
+    },
+    grok: {
+      key: 'grok',
+      label: 'Grok',
+      valueLabel: '--',
+      detail: '等待 Grok 额度',
+      status: 'waiting',
+      items: [{
+        label: '周期额度',
+        remainingLabel: '--',
+        detail: '等待 Grok 周期数据 · 等待重置时间',
+        pct: 4
+      }]
+    },
+    codex: {
+      key: 'codex',
+      label: 'Codex',
+      valueLabel: '--',
+      detail: '等待 Codex 额度',
+      status: 'waiting',
+      items: [{
+        label: '周额度',
+        remainingLabel: '--',
+        detail: '等待 Codex 周期数据 · 等待重置时间',
+        pct: 4
+      }]
+    },
+    kimi: {
+      key: 'kimi',
+      label: 'Kimi',
+      valueLabel: '--',
+      detail: '等待 Kimi 编程套餐额度',
+      status: 'waiting',
+      items: [{
+        label: '5小时额度',
+        remainingLabel: '--',
+        detail: '等待 Kimi 窗口数据 · 等待重置时间',
+        pct: 4
+      }, {
+        label: '周额度',
+        remainingLabel: '--',
+        detail: '等待 Kimi 周期数据 · 等待重置时间',
+        pct: 4
+      }]
+    }
+  };
+  return defaults[key];
+}
+
 function defaultQuotaFeeds() {
-  return [{
-    label: 'GLM / Z.ai',
-    valueLabel: '--',
-    detail: '等待额度上报',
-    status: 'waiting',
-    items: [{
-      label: '5小时额度',
-      valueLabel: '--',
-      detail: '等待智谱额度数据 · 等待重置时间',
-      pct: 4
-    }, {
-      label: 'MCP额度',
-      valueLabel: '--',
-      detail: '等待智谱 MCP 数据 · 等待重置时间',
-      pct: 4
-    }]
-  }];
+  return [defaultQuotaFeed('glm')];
 }
 
 function quotaItemDetail(item) {
@@ -91,6 +166,11 @@ function quotaRemainingText(item) {
   return '--';
 }
 
+function quotaHeadlineText(item) {
+  if (item.usedLabel) return item.usedLabel;
+  return quotaRemainingText(item);
+}
+
 function renderQuotaItems(feed) {
   const items = Array.isArray(feed.items) && feed.items.length ? feed.items : [{
     label: feed.label,
@@ -99,26 +179,49 @@ function renderQuotaItems(feed) {
     pct: feed.pct
   }];
   return items.slice(0, 3).map((item) =>
-    '<div class="quota-item"><div class="quota-line"><span class="quota-name">' + esc(item.label) + '</span><span class="quota-remaining">' + esc(quotaRemainingText(item)) + '</span></div><span class="quota-detail">' + esc(quotaItemDetail(item)) + '</span><span class="bar"><i style="width:' + Math.max(4, Math.min(100, Number(item.pct) || 0)) + '%"></i></span></div>'
+    '<div class="quota-item"><div class="quota-line"><span class="quota-name">' + esc(item.label) + '</span><span class="quota-remaining">' + esc(quotaHeadlineText(item)) + '</span></div><span class="quota-detail">' + esc(quotaItemDetail(item)) + '</span><span class="bar"><i style="width:' + Math.max(4, Math.min(100, Number(item.pct) || 0)) + '%"></i></span></div>'
   ).join('');
 }
 
-function renderGlmQuotaCard(feed) {
+function renderQuotaCard(feed) {
   const plan = feed.levelLabel ? '<span class="quota-plan">' + esc(feed.levelLabel) + '</span>' : '';
   const statusLabels = { ok: '正常', partial: '部分可用', stale: '数据暂旧', expired: '数据已过期', waiting: '读取中', error: '读取失败' };
   const status = esc(statusLabels[feed.status] || feed.status || '读取中');
   return '<div class="quota quota-card-wide"><div class="quota-head"><strong>' + esc(feed.label) + '</strong><span class="quota-state">' + status + '</span></div><span class="quota-summary">' + esc(feed.detail || feed.valueLabel || '--') + plan + '</span><div class="quota-items">' + renderQuotaItems(feed) + '</div></div>';
 }
 
+function renderGlmQuotaCard(feed) {
+  return renderQuotaCard(feed);
+}
+
 function renderQuotaFeeds(feeds) {
-  const list = feeds && feeds.length ? feeds : defaultQuotaFeeds();
-  const glm = list.find((feed) => feed && feed.key === 'glm') || list[0] || defaultQuotaFeeds()[0];
-  quotaList().innerHTML = renderGlmQuotaCard(glm);
+  const list = feeds && feeds.length ? feeds : [];
+  const glm = list.find((feed) => feed && feed.key === 'glm') || list[0] || defaultQuotaFeed('glm');
+  const cursor = list.find((feed) => feed && feed.key === 'cursor') || defaultQuotaFeed('cursor');
+  const grok = list.find((feed) => feed && feed.key === 'grok') || defaultQuotaFeed('grok');
+  const codex = list.find((feed) => feed && feed.key === 'codex') || defaultQuotaFeed('codex');
+  const kimi = list.find((feed) => feed && feed.key === 'kimi') || defaultQuotaFeed('kimi');
+  quotaList().innerHTML = [glm, cursor, grok, codex, kimi].map(renderQuotaCard).join('');
+}
+
+function renderSyncFacts(facts) {
+  const labels = { local: '本机', upload: '上报', national: '总榜', city: '城市' };
+  const statusLabel = { ok: '已就绪', waiting: '进行中', blocked: '受阻', 'outside-window': '未进窗' };
+  const order = ['local', 'upload', 'national', 'city'];
+  const source = facts || {};
+  const node = $('#syncFacts');
+  if (!node) return;
+  node.innerHTML = order.map((key) => {
+    const item = source[key] || { status: 'waiting', detail: '等待同步' };
+    const status = item.status || 'waiting';
+    const tip = labels[key] + ' · ' + (statusLabel[status] || status) + '：' + (item.detail || '等待同步');
+    return '<button type="button" class="sync-light" data-status="' + esc(status) + '" data-tip="' + esc(tip) + '" title="' + esc(tip) + '" aria-label="' + esc(tip) + '"><i></i><span>' + esc(labels[key]) + '</span></button>';
+  }).join('');
 }
 
 function renderRankFacts(facts) {
   const fallback = [
-    { label: '榜单分', valueLabel: '--', detail: '等待排行榜匹配' },
+    { label: '实际 Token（本机）', valueLabel: '--', detail: '仅这台电脑，不含其他设备' },
     { label: '距上一名', valueLabel: '--', detail: '等待榜单数据' },
     { label: '城市榜', valueLabel: '#--', detail: 'SCYS 未返回城市身份' }
   ];
@@ -318,17 +421,15 @@ function renderIdentityBinding(leaderboard, account) {
     identityAccount = accountMarker;
     resetIdentitySelect();
   }
+  if (leaderboard.matched) identityPanelOpen = false;
   const needsBinding = connected && !leaderboard.matched && identity.status === 'binding-required';
   if (needsBinding) identityPanelOpen = true;
   const manage = $('#identityManageButton');
-  manage.hidden = !connected;
-  manage.textContent = leaderboard.matched || identity.bound ? '更换账号' : '绑定账号';
-  $('#identityBind').hidden = !(connected && identityPanelOpen);
-  $('#identityTitle').textContent = leaderboard.matched
-    ? '更换榜单账号'
-    : identity.bound
-      ? '已绑定账号暂未出现在今日公开榜单'
-      : '榜单账号未匹配';
+  manage.hidden = true;
+  $('#identityBind').hidden = !(connected && identityPanelOpen && !leaderboard.matched);
+  $('#identityTitle').textContent = identity.bound
+    ? '已绑定账号暂未出现在今日公开榜单'
+    : '榜单账号未匹配';
   $('#identityDetail').textContent = identity.detail || '请选择一次公开榜单账号；绑定只保存在本机。';
 }
 
@@ -402,13 +503,33 @@ function render(data) {
     ? 'scys ' + data.account.accountId
     : '未绑定 scys';
   const daemon = data.service && data.service.running ? 'service 正常' : 'service 状态未知';
-  const operationText = renderUploadOperation(data.sync && data.sync.manualUpload);
+  const operation = data.sync && data.sync.manualUpload;
+  const operationText = renderUploadOperation(operation);
+  const boardSyncCaption = data.sync && data.sync.leaderboardSync && data.sync.leaderboardSync.caption;
+  const runningUpload = operation && operation.status === 'running';
+  const failedUpload = operation && operation.status === 'failed';
 
-  $('#totalValue').textContent = overall.totalLabel || data.actualTotalLabel || '--';
-  $('#totalCaption').textContent = '实际 Token（本机）';
-  $('#rankValue').textContent = leaderboard.rankLabel || data.rankLabel || '#--';
-  renderRankFacts(data.rankFacts);
-  const sync = operationText || (data.sync && data.sync.label) || '等待同步';
+  const heroScore = (leaderboard.scoreLabel && leaderboard.scoreLabel !== '--')
+    ? leaderboard.scoreLabel
+    : (data.leaderboardTotalLabel && data.leaderboardTotalLabel !== '--' ? data.leaderboardTotalLabel : '');
+  if (heroScore) lastHeroScore = heroScore;
+  $('#totalValue').textContent = lastHeroScore;
+  $('#totalCaption').textContent = '榜单分';
+  const rankLive = Boolean(leaderboard.matched) && leaderboard.status !== 'stale';
+  $('#rankCaption').textContent = leaderboard.rankCaption || (rankLive ? '总榜' : '未进公开榜');
+  $('#rankValue').textContent = rankLive ? (leaderboard.rankLabel || data.rankLabel || '#--') : '#--';
+  document.querySelector('.rank').classList.toggle('stale', !rankLive);
+  const localUsageText = overall.totalLabel || data.actualTotalLabel || '';
+  if (localUsageText && localUsageText !== '--') lastLocalUsage = localUsageText;
+  const rankFacts = data.rankFacts;
+  if (rankFacts && Array.isArray(rankFacts.items) && rankFacts.items[0] && (!rankFacts.items[0].valueLabel || rankFacts.items[0].valueLabel === '--') && lastLocalUsage !== '--') {
+    rankFacts.items[0].valueLabel = lastLocalUsage;
+  }
+  renderRankFacts(rankFacts);
+  renderSyncFacts(data.sync && data.sync.facts);
+  const sync = runningUpload || failedUpload
+    ? (operationText || (data.sync && data.sync.label) || '等待同步')
+    : (boardSyncCaption || (data.sync && data.sync.label) || operationText || '等待同步');
   $('#serviceText').textContent = account + ' · ' + (data.date || '--') + ' · ' + sync + ' · ' + daemon;
   $('#serviceText').title = (data.sync && data.sync.detail) || '';
   const completeness = { full: '完整快照', observed: '增量快照', waiting: '等待统计' }[overall.completeness] || overall.status || '等待统计';
@@ -462,8 +583,8 @@ async function openLeaderboard() {
   }
 }
 
-async function load() {
-  if (refreshPaused) return;
+async function load(force) {
+  if (refreshPaused && !force) return;
   const sequence = ++loadSequence;
   if (loadController) loadController.abort();
   loadController = new AbortController();
@@ -471,8 +592,26 @@ async function load() {
     const response = await fetch(API + '/summary', { cache: 'no-store', signal: loadController.signal });
     const data = await response.json();
     if (sequence === loadSequence) render(data);
+    return data;
   } catch (error) {
     if (error && error.name !== 'AbortError' && sequence === loadSequence) $('#serviceText').textContent = '本地 API 不可用';
+  }
+}
+
+async function pollSyncUntilSettled() {
+  syncPolling = true;
+  try {
+    const deadline = Date.now() + 30000;
+    let data = await load(true);
+    while (Date.now() < deadline) {
+      const status = data && data.sync && data.sync.leaderboardSync && data.sync.leaderboardSync.status;
+      if (status !== 'scheduled' && status !== 'running') return data;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      data = await load(true);
+    }
+    return data;
+  } finally {
+    syncPolling = false;
   }
 }
 
@@ -492,7 +631,7 @@ $('#uploadButton').onclick = async () => {
       $('#serviceText').textContent = '上报失败：' + detail;
       $('#serviceText').title = String(result.output || result.error || '');
     }
-    await load();
+    await pollSyncUntilSettled();
   } catch (error) {
     $('#serviceText').textContent = '上报请求失败：server 未响应或网络错误';
     $('#serviceText').title = String((error && error.message) || error || '');
@@ -516,7 +655,7 @@ $('#identityBindButton').onclick = bindLeaderboardIdentity;
 icons();
 load();
 setInterval(() => {
-  if (!refreshPaused) load();
+  if (!refreshPaused && !syncPolling) load();
 }, 10000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) load();

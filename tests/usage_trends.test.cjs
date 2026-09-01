@@ -4,6 +4,7 @@ const path = require("path");
 const {
   buildZaiQuotaFeed,
   buildZaiUsageTrend,
+  decryptElectronV10Payload,
   emptyZaiUsageTrend,
   normalizeZaiHistoryTime,
   retainLeaderboardSnapshot,
@@ -127,6 +128,18 @@ const quotaAuthPartial = buildZaiQuotaFeed(
 assert.equal(quotaAuthPartial.quotaReason, "auth");
 assert.equal(quotaAuthPartial.trendReason, "read");
 
+const authBusinessCode = buildZaiQuotaFeed(
+  { label: "env" },
+  { ok: true, status: 200, json: { code: 1000, msg: "Authentication Failed" } },
+  { ok: true, status: 200, json: { code: 1000, msg: "Authentication Failed" } },
+  { ok: true, status: 200, json: { code: 1000, msg: "Authentication Failed" } },
+);
+assert.equal(
+  authBusinessCode.quotaReason,
+  "auth",
+  "HTTP 200 + Authentication Failed must be treated as an invalid Z.ai key",
+);
+
 const invalidBusinessCode = buildZaiUsageTrend(
   { ok: true, json: { code: 500, data: { x_time: [], tokensUsage: [] } } },
   month,
@@ -218,6 +231,50 @@ assert.equal(mixedFreshness.usageTrend.history7d.status, "ok");
 const quotaAuthRetained = retainLastGoodZaiQuota(quotaAuthPartial, lastGood);
 assert.equal(quotaAuthRetained.usageTrend.history24h.status, "stale", "quota-only auth failure must not suppress a valid 24h fallback");
 assert.equal(quotaAuthRetained.usageTrend.history7d.status, "ok");
+
+const lastGoodWithQuotaBars = {
+  ...lastGood,
+  items: [{
+    key: "glm-5h",
+    label: "5小时额度",
+    status: "ok",
+    remainingLabel: "剩余 80%",
+    pct: 20,
+  }],
+};
+const quotaReadFail = {
+  key: "glm",
+  status: "error",
+  reason: "read",
+  quotaReason: "read",
+  detail: "Z.ai 接口暂不可用",
+  items: [{
+    key: "glm-5h",
+    label: "5小时额度",
+    status: "error",
+    remainingLabel: "--",
+    pct: 4,
+  }],
+  usageTrend: emptyZaiUsageTrend("read"),
+};
+const retainedQuotaBars = retainLastGoodZaiQuota(quotaReadFail, lastGoodWithQuotaBars);
+assert.equal(
+  retainedQuotaBars.items.find((item) => item.key === "glm-5h")?.remainingLabel,
+  "剩余 80%",
+  "transient quota-limit failures must keep the last successful 5-hour bar",
+);
+
+assert.equal(typeof decryptElectronV10Payload, "function", "must export decryptElectronV10Payload");
+{
+  const crypto = require("crypto");
+  const key = Buffer.alloc(32, 7);
+  const iv = Buffer.alloc(12, 3);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update("plain-z.ai-key", "utf8"), cipher.final()]);
+  const payload = Buffer.concat([Buffer.from("v10"), iv, ciphertext, cipher.getAuthTag()]);
+  assert.equal(decryptElectronV10Payload(key, payload), "plain-z.ai-key");
+  assert.equal(decryptElectronV10Payload(key, Buffer.from("enc:nope")), "");
+}
 
 const accountA = { ...lastGood, label: "account-a" };
 const accountB = { ...lastGood, label: "account-b" };

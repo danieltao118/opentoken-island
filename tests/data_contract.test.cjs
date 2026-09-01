@@ -8,6 +8,7 @@ const {
   mergeLocalUsageSnapshot,
   redactedUploadRecord,
   sanitizeUploadPayload,
+  scysLocalByTool,
   selectOwnEntry,
   validateScysUpstreamUrl,
 } = require(path.resolve(__dirname, "..", "server.js"));
@@ -35,6 +36,7 @@ assert.equal(replaced.completeness, "full");
 
 const board = leaderboardProjection({
   updatedAt: "2026-07-28T01:00:00.000Z",
+  leaderboardMatched: true,
   own: { score: 600, rank: 9, byTool: { codex: 300, hermes: 200, openclaw: 100 } },
   myCity: "杭州",
   myRank: 9,
@@ -48,6 +50,7 @@ assert.equal(board.city.status, "partial");
 assert.equal(board.cityDirectory[0].members, 12);
 const cityBoard = leaderboardProjection({
   ...board,
+  leaderboardMatched: true,
   own: { score: 600, rank: 9, byTool: { codex: 300 } },
   myCity: "杭州",
   cityRank: 3,
@@ -70,6 +73,7 @@ assert.ok(accountAKey && accountBKey && accountAKey !== accountBKey);
 const isolated = isolateAccountState({
   accountKey: accountAKey,
   userId: "old-user",
+  myCity: "Hefei",
   leaderboard: { own: { userId: "old-user" } },
   lastUpload: { summary: { total: 100 } },
   uploadTransport: { ok: true },
@@ -77,6 +81,7 @@ const isolated = isolateAccountState({
 }, accountAKey, accountBKey);
 assert.equal(isolated.changed, true);
 assert.equal(isolated.state.accountKey, accountBKey);
+assert.equal(isolated.state.myCity, undefined, "city identity must clear when the SCYS account changes");
 assert.equal(isolated.state.userId, undefined, "SCYS identity must be cleared when the webhook account changes");
 assert.equal(isolated.state.leaderboard, undefined);
 assert.equal(isolated.state.lastUpload, undefined);
@@ -261,5 +266,24 @@ for (const target of [
 ]) {
   assert.equal(validateScysUpstreamUrl(target), false, `unsafe upstream must be blocked: ${target}`);
 }
+
+assert.deepEqual(
+  scysLocalByTool(
+    { codex: 457630232, grok: 199829503, cursor: 40079916, "claude-code": 26511365 },
+    { codex: 168617038, grok: 106033984, cursor: 26338762, "claude-code": 26511365, hermes: 640580, openclaw: 6718773 },
+  ),
+  { codex: 168617038, grok: 106033984, cursor: 26338762, "claude-code": 26511365 },
+  "local SCYS projection must use the board score per local tool and never import Hermes/OpenClaw",
+);
+assert.deepEqual(
+  scysLocalByTool({ codex: 10_000_000 }, { codex: 110_000_000 }),
+  { codex: 10_000_000 },
+  "other computers cannot inflate the local SCYS projection above this machine's raw tokens",
+);
+assert.deepEqual(
+  scysLocalByTool({ cursor: 40 }, {}),
+  { cursor: 40 },
+  "unmatched boards keep local raw until SCYS returns a per-tool score",
+);
 
 console.log("data contract and privacy boundary ok");

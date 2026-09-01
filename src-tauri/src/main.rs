@@ -112,18 +112,18 @@ fn main() {
 }
 
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open_panel = MenuItem::with_id(app, "open-panel", "Open Panel", true, None::<&str>)?;
+    let open_panel = MenuItem::with_id(app, "open-panel", "打开面板", true, None::<&str>)?;
     let show_island_item =
-        MenuItem::with_id(app, "show-island", "Show Island", true, None::<&str>)?;
+        MenuItem::with_id(app, "show-island", "显示小岛", true, None::<&str>)?;
     let show_quota_bar_item =
-        MenuItem::with_id(app, "show-quota-bar", "Show Quota Bar", true, None::<&str>)?;
+        MenuItem::with_id(app, "show-quota-bar", "显示额度条", true, None::<&str>)?;
     let hide_quota_bar_item =
-        MenuItem::with_id(app, "hide-quota-bar", "Hide Quota Bar", true, None::<&str>)?;
+        MenuItem::with_id(app, "hide-quota-bar", "隐藏额度条", true, None::<&str>)?;
     let open_browser =
-        MenuItem::with_id(app, "open-browser", "Open Browser UI", true, None::<&str>)?;
-    let open_logs = MenuItem::with_id(app, "open-logs", "Open Logs", true, None::<&str>)?;
+        MenuItem::with_id(app, "open-browser", "浏览器打开界面", true, None::<&str>)?;
+    let open_logs = MenuItem::with_id(app, "open-logs", "打开日志", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit OpenToken Island", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 OpenToken 小岛", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -141,7 +141,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id("opentoken-island")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("OpenToken Island - hover for today's quota")
+        .tooltip("OpenToken 小岛 - 悬停查看今日额度")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open-panel" => {
                 let _ = show_panel(app);

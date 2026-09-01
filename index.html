@@ -334,7 +334,7 @@
       <div class="grid">
         <section class="hero">
           <div>
-            <p class="label">今日实际 Token（本机）</p>
+            <p class="label" id="totalCaption">今日实际 Token（本机）</p>
             <p id="totalValue" class="value">--</p>
           </div>
           <div id="rankValue" class="rank">#--</div>
@@ -476,6 +476,7 @@
       setLoading(manualUploadRunning);
       const sync = manualUploadText(operation) || (data.sync && data.sync.label ? data.sync.label : data.source || 'waiting');
       $('#totalValue').textContent = overall.totalLabel || data.actualTotalLabel || '--';
+      if ($('#totalCaption')) $('#totalCaption').textContent = overall.scopeLabel || data.usageScopeLabel || '今日实际 Token（本机）';
       $('#rankValue').textContent = leaderboard.rankLabel || data.rankLabel || '#--';
       $('#serviceText').textContent = account + ' · ' + (data.date || '--') + ' · ' + sync + ' · ' + daemon;
       $('#serviceText').title = data.sync && data.sync.detail ? data.sync.detail : '';

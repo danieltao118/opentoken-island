@@ -62,6 +62,10 @@ async function waitForHealth(url, child) {
     const summary = await summaryResponse.json();
     assert.equal(summaryResponse.status, 200);
     assert.equal(summary.ok, true);
+    assert.ok((summary.quotaFeeds || []).some((feed) => feed.key === "glm"), "summary must include a GLM quota card");
+    assert.ok((summary.quotaFeeds || []).some((feed) => feed.key === "cursor"), "summary must include a Cursor quota card");
+    assert.ok((summary.quotaFeeds || []).some((feed) => feed.key === "grok"), "summary must include a Grok quota card");
+    assert.ok((summary.quotaFeeds || []).some((feed) => feed.key === "codex"), "summary must include a Codex quota card");
     assert.ok(elapsed < 2000, `summary must be local-only and fast, took ${elapsed}ms`);
     assert.equal(summaryResponse.headers.get("access-control-allow-origin"), null);
 

@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs",
+    "test": "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/quota_providers.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_sync.test.cjs && node tests/sync_pipeline.test.cjs && node tests/leaderboard_city.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/leaderboard_window.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs && node tests/upload_scan.test.cjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

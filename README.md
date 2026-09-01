@@ -48,8 +48,8 @@ See [docs/windows-gui.md](docs/windows-gui.md) for setup, development, and build
 - **Local actual Token** is raw usage from this computer only. It is never merged with SCYS leaderboard score.
 - **GLM quota and 24h/7d/30d trends** come only from the configured Z.ai usage API and retain the latest successful aggregate buckets locally.
 - **SCYS score/rank/tool composition/city** comes only from the SCYS leaderboard response. Hermes and OpenClaw from other computers appear in this section, not in the local total.
-- On a new computer, use **绑定账号** in the leaderboard section once. The choice is a public leaderboard ID stored only on this computer; switching the SCYS webhook account clears the prior binding and leaderboard state.
-- City rank is shown only when SCYS returns a city identity and a city-specific rank. The client does not guess a city from member counts.
+- First-time bind only appears when this computer has not matched the personal public row yet; the panel does not offer switching accounts afterward. The choice is a public leaderboard ID stored only on this computer; switching the SCYS webhook account clears the prior binding and leaderboard state.
+- City rank is shown only when the bound user ID is found in a public city board (`?city=`). The client does not guess a city from member counts.
 - Uploads reject unknown fields and sensitive-looking values, pin the destination to the SCYS HTTPS endpoint, and persist only aggregate summaries, status, and payload hashes.
 - `/api/summary` reads local projections only; scans and network refreshes run through the background coordinator. GLM fallback is period-specific and expires after 12 hours instead of being shown indefinitely.
 

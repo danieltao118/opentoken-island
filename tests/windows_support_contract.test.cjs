@@ -10,7 +10,7 @@ const packageLock = readJson("package-lock.json");
 assert.equal(pkg.version, "0.1.5");
 assert.equal(packageLock.version, pkg.version);
 assert.equal(packageLock.packages[""].version, pkg.version);
-assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs");
+assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/quota_providers.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_sync.test.cjs && node tests/sync_pipeline.test.cjs && node tests/leaderboard_city.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/leaderboard_window.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs && node tests/upload_scan.test.cjs");
 assert.equal(pkg.scripts["tauri:dev"], "tauri dev");
 assert.equal(pkg.scripts["tauri:build"], "tauri build");
 assert.equal(pkg.devDependencies["@tauri-apps/cli"], "^2.11.3");
@@ -61,13 +61,43 @@ assert.match(
 );
 assert.match(
   mainRs,
-  /MenuItem::with_id\(app, "show-quota-bar", "Show Quota Bar"/,
+  /MenuItem::with_id\(app, "open-panel", "打开面板"/,
+  "Tray menu labels must be Chinese"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "show-island", "显示小岛"/,
+  "Tray menu must expose the compact island window in Chinese"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "show-quota-bar", "显示额度条"/,
   "Tray menu must expose a persistent Coding Quota Bar style compact window"
 );
 assert.match(
   mainRs,
-  /MenuItem::with_id\(app, "hide-quota-bar", "Hide Quota Bar"/,
+  /MenuItem::with_id\(app, "hide-quota-bar", "隐藏额度条"/,
   "Tray menu must let users hide the persistent compact quota bar"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "open-browser", "浏览器打开界面"/,
+  "Tray menu must open the browser UI with a Chinese label"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "open-logs", "打开日志"/,
+  "Tray menu must open logs with a Chinese label"
+);
+assert.match(
+  mainRs,
+  /MenuItem::with_id\(app, "quit", "退出 OpenToken 小岛"/,
+  "Tray quit action must use the Chinese app name"
+);
+assert.match(
+  mainRs,
+  /tooltip\("OpenToken 小岛 - 悬停查看今日额度"\)/,
+  "Tray tooltip must be Chinese"
 );
 assert.match(
   mainRs,
@@ -152,12 +182,19 @@ assert.match(
 assert.match(popoverHtml, /quotaList/, "Popover must render the GLM quota module");
 assert.match(popoverHtml, /renderQuotaItems/, "Popover quota cards must render nested quota items");
 assert.match(popoverHtml, /quota-items/, "Popover quota UI should support multiple rows per provider");
-assert.match(popoverHtml, /renderGlmQuotaCard/, "Popover should render one focused GLM quota card");
+assert.match(popoverHtml, /renderGlmQuotaCard/, "Popover should keep the GLM quota card renderer");
+assert.match(popoverHtml, /renderQuotaCard/, "Popover should reuse one quota-card renderer for GLM, Cursor, and Grok");
+assert.match(popoverHtml, /key === 'cursor'/, "Popover must render a Cursor quota card");
+assert.match(popoverHtml, /key === 'grok'/, "Popover must render a Grok quota card");
+assert.match(popoverHtml, /key === 'codex'/, "Popover must render a Codex quota card");
+assert.match(popoverHtml, /label: 'Codex'/, "Popover should keep a Codex quota fallback card");
+assert.match(popoverHtml, /周额度/, "Codex quota card should show the weekly window when present");
 assert.match(popoverHtml, /quota-card-wide/, "GLM quota card should span the panel width");
 assert.match(popoverHtml, /quotaRemainingText/, "Quota rows should emphasize the remaining percentage");
+assert.match(popoverHtml, /usedLabel/, "Cursor quota rows should headline used percent like the Cursor dashboard");
 assert.doesNotMatch(popoverHtml, /item\.usageLabel\s*\|\|\s*item\.rawValueLabel\s*\|\|\s*item\.valueLabel/, "Quota rows should not repeat raw used/total values beside the remaining percentage");
-assert.match(popoverHtml, /5小时额度/, "Popover should show the five-hour quota bucket");
-assert.match(popoverHtml, /MCP额度/, "Popover should show the Z.ai MCP quota bucket");
+assert.match(popoverHtml, /周期额度/, "Grok quota card should show the SuperGrok period bar");
+assert.doesNotMatch(popoverHtml, /额外积分/, "Grok quota card should not show an extra-credits row");
 assert.match(popoverHtml, /重置/, "Popover should show reset time details from Coding Quota Bar");
 assert.match(popoverHtml, /\.bar\{display:block/, "Quota and tool progress bars should render as real horizontal bars");
 assert.doesNotMatch(popoverHtml, /visibleTools\(data\.tools\)/, "Tool usage rows should show every tracked agent, including Codex");
@@ -176,7 +213,9 @@ assert.match(popoverHtml, /function openLeaderboard/, "Leaderboard button should
 assert.match(popoverHtml, /\/open-leaderboard/, "Leaderboard button should call the local default-browser opener");
 assert.match(popoverHtml, /actualTotalLabel/, "Popover hero should emphasize the actual fresh input and output total");
 assert.match(popoverHtml, /\.rank\{display:grid/, "Popover should visibly render the real leaderboard rank");
-assert.match(popoverHtml, /实际 Token（本机）/, "Hero should distinguish known actual usage scope from the normalized leaderboard score");
+assert.match(popoverHtml, /id="totalCaption" class="label">榜单分/, "Hero should show the SCYS board score");
+assert.match(popoverHtml, /实际 Token（本机）/, "Local raw usage remains a rank-fact cell, not the hero");
+assert.match(popoverHtml, /lastHeroScore/, "Hero board score must not flash empty while a sync is in flight");
 assert.match(popoverHtml, /id="serviceText"[^>]*role="status"[^>]*aria-live="polite"/, "Service updates should be announced accessibly");
 assert.ok(
   popoverHtml.indexOf('id="usageTrend"') < popoverHtml.indexOf('id="toolList"')
@@ -209,9 +248,7 @@ assert.doesNotMatch(popoverHtml, /Builder Lv|XP|class="game"|rankDelta|xpText|ra
 assert.match(popoverHtml, /id="rankFacts"/, "Panel should replace game data with real leaderboard facts");
 assert.match(popoverHtml, /function renderRankFacts/, "Panel should render leaderboard facts from the summary payload");
 assert.doesNotMatch(popoverHtml, /Codex Main/, "Static badge placeholders should not flash Codex while it is hidden");
-assert.doesNotMatch(popoverHtml, /label: 'Codex'/, "Codex quota fallback should be hidden for now");
-assert.doesNotMatch(popoverHtml, /Codex[\s\S]{0,80}周额度/, "Codex quota card should be hidden for now");
-assert.doesNotMatch(popoverHtml, /Waiting GPT\/OpenAI rows/, "Quota UI should not show GPT/OpenAI as the Codex quota card");
+assert.doesNotMatch(popoverHtml, /Waiting GPT\/OpenAI rows/, "Quota UI should not show GPT\/OpenAI as the Codex quota card");
 assert.doesNotMatch(popoverHtml, /[^<]\/(?:span|strong)>/, "Popover HTML must not contain malformed closing tags that corrupt layout");
 assert.doesNotMatch(popoverHtml, /\uFFFD|鎺|鐩|璇|绛|涓婃姤|浜縛|涓嘸/, "Popover must not contain mojibake strings");
 
@@ -231,7 +268,15 @@ assert.match(indexHtml, /loadController\.abort\(\)/, "Browser dashboard should r
 const windowsSupport = fs.readFileSync(path.join(root, "src-tauri/src/windows_support.rs"), "utf8");
 const nsisHooks = fs.readFileSync(path.join(root, "src-tauri/nsis-hooks.nsh"), "utf8");
 assert.doesNotMatch(nsisHooks, /NSIS_HOOK_PREUNINSTALL/);
+assert.match(nsisHooks, /NSIS_HOOK_POSTINSTALL/);
 assert.match(nsisHooks, /NSIS_HOOK_POSTUNINSTALL/);
+assert.match(nsisHooks, /OpenToken 小岛\.lnk/, "Installer should create a Chinese desktop shortcut");
+assert.match(nsisHooks, /Delete "\$DESKTOP\\OpenToken Island\.lnk"/, "Installer should remove the English desktop shortcut name");
+assert.match(
+  nsisHooks,
+  /NSIS_HOOK_POSTUNINSTALL[\s\S]*Delete "\$DESKTOP\\OpenToken 小岛\.lnk"/,
+  "Uninstall must remove the Chinese desktop shortcut"
+);
 assert.match(nsisHooks, /\$\{If\} \$UpdateMode <> 1/);
 assert.match(nsisHooks, /DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "OpenTokenIsland"/);
 assert.match(
@@ -284,8 +329,8 @@ assert.match(windowsSupport, /pub fn request_server_shutdown\(port: u16\)/);
 assert.match(serverJs, /\/api\/shutdown/, "Server must expose a local shutdown endpoint for takeover and uninstall");
 assert.match(
   serverJs,
-  /Array\.isArray\(payload\.rows\) \? JSON\.stringify\(forwardPayload\) : body/,
-  "Signed v2 envelopes must be forwarded byte-exact; only unsigned usage-v1 rows may be rebuilt"
+  /\(Array\.isArray\(payload\.rows\) \|\| rewritten\) \? JSON\.stringify\(forwardPayload\) : body/,
+  "Signed v2 envelopes must be forwarded byte-exact; unsigned v1 or unsigned v2 hourly batches may be rebuilt"
 );
 const officialOpenTokenCandidate = 'path.join(HOME, ".opentoken", "bin", "opentoken.exe")';
 const legacyOpenTokenCandidate = 'path.join(HOME, ".local", "bin", "opentoken.exe")';
@@ -298,8 +343,26 @@ assert.match(
   /function backgroundTick[\s\S]*localSnapshotNeedsRefresh\(today, force\)[\s\S]*refreshUsageInBackground\(today\)/,
   "A background coordinator must refresh the durable local snapshot outside summary reads"
 );
+assert.match(serverJs, /function backgroundTick[\s\S]*cachedCursorQuota\(\)/, "Background ticks must refresh Cursor quota outside summary reads");
+assert.match(serverJs, /function backgroundTick[\s\S]*cachedGrokQuota\(\)/, "Background ticks must refresh Grok quota outside summary reads");
+assert.match(serverJs, /function backgroundTick[\s\S]*cachedCodexQuota\(\)/, "Background ticks must refresh Codex quota outside summary reads");
 assert.match(serverJs, /CODING_QUOTA_CONFIG_PATH/, "Server must know where Coding Quota Bar stores provider config");
 assert.match(serverJs, /fetchZaiQuota/, "Server must fetch the existing Z AI quota feed");
+assert.match(serverJs, /GetCurrentPeriodUsage/, "Cursor quota must use the dashboard current-period usage endpoint");
+assert.match(serverJs, /cli-chat-proxy\.grok\.com\/v1\/billing/, "Grok quota must use the CLI-proxy billing JSON endpoint");
+assert.match(serverJs, /chatgpt\.com\/backend-api\/wham\/usage/, "Codex quota must use the ChatGPT wham usage endpoint");
+assert.match(serverJs, /function buildCursorQuotaFeed/, "Cursor spend JSON must be mapped into a quota feed");
+assert.match(serverJs, /function buildGrokQuotaFeed/, "Grok credits JSON must be mapped into a quota feed");
+assert.match(serverJs, /function buildCodexQuotaFeed/, "Codex rate-limit JSON must be mapped into a quota feed");
+assert.match(serverJs, /function peekCursorQuota/, "Summary must peek cached Cursor quota without waiting on the network");
+assert.match(serverJs, /function peekGrokQuota/, "Summary must peek cached Grok quota without waiting on the network");
+assert.match(serverJs, /function peekCodexQuota/, "Summary must peek cached Codex quota without waiting on the network");
+assert.match(serverJs, /state\.vscdb/, "Cursor auth must be read from the local Cursor state database");
+assert.match(serverJs, /auth\.json/, "Grok auth must be read from the local Grok CLI auth file");
+assert.match(serverJs, /path\.join\(HOME, "\.codex"\)/, "Codex auth must be read from the local Codex CLI home");
+assert.match(serverJs, /ChatGPT-Account-Id/, "Codex usage reads must send the ChatGPT account header");
+assert.match(serverJs, /windowsHide:\s*true/, "SQLite token reads must not flash a console window");
+assert.doesNotMatch(serverJs, /cursorAuth\/accessToken[\s\S]{0,80}logIslandEvent/, "Cursor access tokens must not be written to the island event log");
 assert.match(serverJs, /quotaFeeds/, "Summary payload must expose quota feeds to the UI");
 assert.match(serverJs, /function zaiQuotaItems/, "Z.ai quota feed must expose split quota buckets");
 assert.match(serverJs, /function codexQuotaItems/, "Codex quota feed must expose five-hour and weekly buckets");
@@ -310,6 +373,15 @@ assert.match(serverJs, /levelLabel/, "Z.ai quota feed should expose the Coding P
 assert.match(serverJs, /readWindowsUserEnv/, "Server should read user-level Z_AI_API_KEY when the process env is stale");
 assert.match(serverJs, /HKCU\\\\Environment/, "Windows user env lookup should use HKCU Environment");
 assert.match(serverJs, /enc:/, "Encrypted Coding Quota Bar keys should not be sent as raw bearer tokens");
+assert.match(serverJs, /function decryptElectronV10Payload/, "Coding Quota Bar enc: keys must be decrypted locally before use");
+assert.match(serverJs, /os_crypt/, "Electron safeStorage master key is in Coding Quota Bar Local State");
+assert.match(serverJs, /Local State/, "Coding Quota Bar Local State must be read for DPAPI-wrapped os_crypt");
+assert.match(serverJs, /CryptUnprotectData/, "Windows DPAPI must unwrap the Electron safeStorage master key");
+assert.doesNotMatch(
+  serverJs,
+  /authorization: `Bearer \$\{String\(account\.apiKey\)\.trim\(\)\}`[\s\S]{0,80}startsWith\("enc:"\)/,
+  "Encrypted enc: blobs must never be sent as Z.ai bearer tokens",
+);
 assert.match(serverJs, /function requestTextOnce/, "HTTP requests should be retryable after a DNS fallback");
 assert.match(serverJs, /Resolve-DnsName/, "Windows Node DNS failures should fall back to the OS resolver");
 assert.match(serverJs, /servername: target\.hostname/, "DNS fallback must keep the original TLS SNI host");
@@ -324,14 +396,29 @@ assert.match(serverJs, /\/api\/open-leaderboard/, "Server should expose an endpo
 assert.match(serverJs, /openExternalUrl\(TOKENRANK_URL\)/, "Leaderboard endpoint should use the system default browser opener");
 assert.match(serverJs, /\/api\/open-logs/, "Server should expose an API endpoint for the log icon button");
 assert.match(serverJs, /function openLogsFile/, "Server should open the local OpenToken Island event log");
-assert.match(serverJs, /function buildSyncStatus/, "Summary payload must explain upload and leaderboard sync state");
+assert.match(serverJs, /function liveLeaderboardMatch/, "Live leaderboard match must ignore retained stale own rows");
+assert.match(serverJs, /function outsidePublicWindowError/, "Unranked accounts should explain the public top-N cutoff");
+assert.match(popoverHtml, /id="rankCaption"/, "Rank badge should label 总榜 vs 未进公开榜");
+assert.match(popoverHtml, /rankCaption/, "Popover must render the rank caption from the summary payload");
+assert.match(popoverHtml, /classList\.toggle\('stale'/, "Unmatched rank badge should not look like a live #87");
 assert.match(serverJs, /leaderboardMatched/, "Sync state must distinguish uploaded data from leaderboard matches");
 assert.match(serverJs, /if \(!uploadSummary && leaderboardMatched\)[\s\S]{0,260}status: "leaderboard"/, "A matched public leaderboard must remain visible when the latest local payload has no token rows");
 assert.match(serverJs, /function mergeLocalUsageSnapshot/, "Local usage must have a durable incremental accumulator");
 assert.match(serverJs, /const localSnapshot = state\.localUsage\?\.date === today/, "Summary must read the persisted local snapshot");
 assert.match(serverJs, /completeness: replace \|\| \(!reset && previous\?\.completeness === "full"\) \? "full" : "observed"/, "Local usage must distinguish full previews from observed incremental data");
-assert.match(serverJs, /\["preview", "--since", date, "--json"\]/, "OpenToken preview snapshots should use the JSON rows that represent the full local daily state");
+assert.match(serverJs, /\["upload", "--since", localDateString\(\)\]/, "Daily uploads should still pass --since today");
+assert.match(serverJs, /function prepareDatedCodexHome/, "Codex scans must be bounded to date folders instead of walking the full session store");
+assert.match(serverJs, /function cleanupDatedCodexHome/, "Temporary Codex scan homes must be removed without deleting real session files");
+assert.match(serverJs, /CODEX_HOME/, "Dated Codex scans should pin CODEX_HOME for the upload child process");
+assert.match(serverJs, /function finalizeManualUploadStatus/, "Upload status must distinguish CLI timeout from SCYS acknowledgement");
+assert.match(serverJs, /function uploadTransportAcked/, "SCYS transport ack must not require the CLI process to exit 0");
 assert.match(serverJs, /function backgroundTick/, "Network and scan work must be coordinated outside the summary read path");
+assert.match(serverJs, /function scheduleLeaderboardSync/, "Leaderboard pulls must be an explicit scheduled state, not an updatedAt guess");
+assert.match(serverJs, /function onManualUploadFinished/, "CLI upload completion must schedule a board pull for both usage ack and no-new-rows");
+assert.match(serverJs, /reason: "no-new-rows"/, "A completed upload with no new rows must still sync the public board");
+assert.match(serverJs, /function applyLeaderboardSyncOutcome/, "Usage ack must retry quickly instead of waiting two minutes");
+assert.doesNotMatch(serverJs, /await flushPendingLocalUsage/, "CLI completed must not forge a usage-v1 POST");
+assert.doesNotMatch(serverJs, /hasTokenUsage && accountStillActive[\s\S]{0,80}force: true/, "A successful usage ack must not immediately force a public leaderboard pull");
 const summaryRoute = serverJs.match(/if \(url\.pathname === "\/api\/summary"\)[\s\S]*?\n  \}/)?.[0] || "";
 assert.doesNotMatch(summaryRoute, /await refreshLeaderboard|await serviceStatus|await refreshUsage/, "Summary must not wait for network or CLI work");
 assert.doesNotMatch(summaryRoute, /backgroundTick|refreshLeaderboard|serviceStatus|refreshUsage/, "Summary GET must remain a side-effect-free local projection");
@@ -382,12 +469,16 @@ assert.match(serverJs, /function selectOwnEntry/, "Leaderboard identity selectio
 assert.doesNotMatch(serverJs, /sameToolScores|entry\.score[\s\S]{0,160}normalizedByTool/, "Public leaderboard metrics must never be used to guess an identity");
 assert.match(serverJs, /url\.pathname === "\/api\/leaderboard-bind"/, "A new computer must have an explicit first-bind API instead of depending on top-N metric guessing");
 assert.match(popoverHtml, /id="identityBind"/, "The GUI must expose first-time leaderboard identity binding");
+assert.match(popoverHtml, /boardSyncCaption/, "GUI must distinguish upload success from leaderboard sync");
+assert.doesNotMatch(popoverHtml, /更换账号|更换榜单账号/, "A matched personal board must not offer switching to another public account");
+assert.match(popoverHtml, /if \(leaderboard\.matched\) identityPanelOpen = false/, "First-bind UI must close after the personal row is matched");
+assert.match(popoverHtml, /manage\.hidden = true/, "Do not show an account-switch control once identity is a personal rank view");
 assert.match(popoverHtml, /只保存所选公开榜单 ID/, "The identity UI should state its local-only privacy boundary");
 assert.match(popoverHtml, /fetch\(API \+ '\/leaderboard-candidates', \{ method: 'POST' \}\)/, "Refreshing candidate data must use the protected POST route");
 assert.match(serverJs, /scysAccountGeneration/, "In-flight leaderboard work must be guarded by an account and identity generation");
 assert.match(serverJs, /if \(leaderboardAutoRefresh\.promise === tracked\)/, "An old leaderboard promise must not clear a newer account's single-flight request");
 assert.match(serverJs, /cityDirectory:[\s\S]*members:/, "SCYS cities.count must be exposed only as participant count");
-assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCount\(leaderboardTotal\) : "--"/, "Leaderboard label should be blank when no leaderboard row is matched");
+assert.match(serverJs, /leaderboardTotalLabel: leaderboard.scoreLabel \|\| "--"/, "Hero board score may come from a city row when the public window misses");
   assert.doesNotMatch(serverJs.match(/async function buildSummary[\s\S]*?\n\}/)?.[0] || "", /mergeKnownToolUsage/, "Summary must never merge leaderboard score into local actual Token");
   assert.match(serverJs, /usageScope: "local"/, "Actual Token scope must stay local even when a leaderboard row exists");
   assert.match(popoverHtml, /id="totalCaption"/, "Popover should identify the scope of the visible Token total");
@@ -401,14 +492,17 @@ assert.match(serverJs, /leaderboardTotalLabel: hasLeaderboardScore \? formatCoun
   assert.match(serverJs, /function augmentClaudeCodeRows/, "Upload proxy must expose a helper that augments missing claude-code rows before forwarding to SCYS");
   assert.match(serverJs, /const ccRows = augmentClaudeCodeRows\(summary\.date\)/, "Upload proxy may use only a completed Claude cache and must not block on a scan");
   assert.match(serverJs, /String\(r\.date \|\| ""\) === String\(summary\.date\)/, "Upload proxy must replace only same-day Claude rows and preserve other dated records");
+assert.match(serverJs, /function scysLocalByTool/, "Local hero total must project SCYS per-tool scores without importing other computers");
+assert.match(serverJs, /生财口径（本机）/, "Matched boards should label the hero as the SCYS local metric");
 assert.match(serverJs, /const actualTotal = Number\(actualUsage\.total \|\| 0\)/, "The main visible total must equal the sum of deduplicated visible tool rows");
 assert.match(serverJs, /function retainLeaderboardSnapshot/, "A transient leaderboard miss should retain the latest same-day multi-device tool snapshot");
 assert.match(serverJs, /actualTotalLabel/, "Summary payload should expose raw actual usage for the main UI");
 assert.match(serverJs, /overallUsage,/, "Summary payload should expose a standalone local usage domain");
 assert.match(serverJs, /leaderboardTotalLabel/, "Summary payload should keep the raw leaderboard score as secondary metadata");
-assert.match(serverJs, /label: "榜单分"/, "Rank facts should label raw leaderboard score separately from actual usage");
+assert.match(serverJs, /label: "实际 Token（本机）"/, "Rank facts should keep local usage after the hero shows board score");
 assert.match(serverJs, /label: distanceLabel/, "Rank facts should show the distance to an adjacent rank instead of duplicating the hero rank");
 assert.match(serverJs, /key: "city-rank"/, "Rank facts should expose the SCYS city rank when available");
+assert.match(serverJs, /function resolveLeaderboardCity/, "City rank may be discovered by locating the bound userId in a public city board");
 assert.doesNotMatch(serverJs, /label: "上报接收"[\s\S]*`\$\{accepted\} 条`/, "Panel facts must not show accepted row counts as a visible usage metric");
 assert.match(serverJs, /function toolsFromUsageMaps/, "Tool usage rows should distinguish normalized usage from raw leaderboard score");
 assert.match(serverJs, /rawValueLabel/, "Tool usage rows should expose the raw leaderboard score separately");
@@ -416,7 +510,7 @@ assert.match(serverJs, /normalizedValue/, "Tool usage rows should expose normali
 assert.doesNotMatch(serverJs, /const value = normalizedValue > 0 \? normalizedValue : rawValue/, "Tool rows must not use normalized input+output as the primary visible usage");
 assert.match(serverJs, /const value = rawValue > 0 \? rawValue : normalizedValue/, "Tool rows should use raw actual usage as the primary visible value");
 assert.match(serverJs, /function actualUsageSummary/, "Summary should build one audited actual-usage total across live sources");
-assert.match(serverJs, /const hasTokenUsage = Boolean\(summary\.date\) && Array\.isArray\(payload\.rows\)/, "Activity payloads must not overwrite the last daily usage snapshot while valid zero-usage days remain representable");
+assert.match(serverJs, /const hasTokenUsage = Boolean\(summary\.date\) && \(Array\.isArray\(payload\.rows\) \|\| hasV2Hours\)/, "Activity payloads must not overwrite the last daily usage snapshot while valid zero-usage days remain representable");
 assert.match(serverJs, /if \(hasTokenUsage\) \{[\s\S]{0,260}state\.lastUpload =/, "Only payloads with token rows may replace the last daily usage snapshot");
 assert.doesNotMatch(serverJs, /usageToolEntry\(\s*"glm"[\s\S]*Coding Quota Bar 24h/, "Coding Quota Bar GLM provider trends must not be included in the actual usage total");
 assert.match(serverJs, /const codexValue = Number\(rawByTool\.codex \|\| 0\)/, "Codex actual usage should use raw OpenToken tokens including cache reads");

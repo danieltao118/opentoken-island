@@ -79,16 +79,21 @@ const { accountKeyForUpstreamUrl, buildSummary, getState, setState, localDateStr
     ),
   ]);
 
-  // 核心断言：本机 actual/raw 与 SCYS 榜单分是两个独立领域。
+  // 核心断言：本机展示改为生财口径（min(本机 raw, 榜单 byTool)），不含其他电脑的 Hermes/OpenClaw。
   assert.equal(summary.source, "preview", `顶层 source 应跟随本机统计，实际=${summary.source}`);
-  assert.equal(summary.actualTotal, 1571758301, `actualTotal 只能是本机原始值，实际=${summary.actualTotal}`);
+  assert.equal(summary.actualTotal, 560854063, `actualTotal 应为生财口径本机分，实际=${summary.actualTotal}`);
+  assert.equal(summary.overallUsage.rawTotal, 1571758301, "rawTotal 必须保留本机全额 raw");
   assert.equal(summary.leaderboardTotal, 568854063, "leaderboardTotal 应保留榜单分");
-  assert.notEqual(summary.actualTotal, summary.leaderboardTotal, "实际消耗不得被榜单分覆盖");
+  assert.notEqual(summary.actualTotal, summary.leaderboardTotal, "本机生财口径不得把其他电脑的 Hermes/OpenClaw 算进来");
   assert.equal(summary.usageScope, "local", "本机 actual 口径必须固定为 local");
   assert.equal(summary.overallUsage.scope, "local");
-  assert.equal(summary.overallUsage.total, 1571758301);
+  assert.equal(summary.overallUsage.metric, "scys");
+  assert.equal(summary.overallUsage.total, 560854063);
+  assert.equal(summary.usageScopeLabel, "生财口径（本机）");
   assert.equal(summary.tools.some((tool) => tool.name === "hermes"), false, "榜单 Hermes 不得混入本机工具");
   assert.equal(summary.tools.some((tool) => tool.name === "openclaw"), false, "榜单 OpenClaw 不得混入本机工具");
+  assert.equal(summary.tools.find((tool) => tool.name === "codex")?.value, 500000000);
+  assert.equal(summary.tools.find((tool) => tool.name === "claude-code")?.value, 60854063);
   assert.equal(summary.leaderboard.tools.find((tool) => tool.name === "hermes")?.score, 3000000, "榜单区应显示其他电脑的 Hermes");
   assert.equal(summary.leaderboard.tools.find((tool) => tool.name === "openclaw")?.score, 5000000, "榜单区应显示其他电脑的 OpenClaw");
   assert.equal(
@@ -104,6 +109,15 @@ const { accountKeyForUpstreamUrl, buildSummary, getState, setState, localDateStr
   assert.equal(summary.leaderboard.city.users, 123);
   assert.equal(summary.leaderboard.cityDirectory[0].members, 123, "cities.count 只能表示参与人数");
   assert.deepEqual(summary.glm.trends.periods.map((period) => period.key), ["24h", "7d", "30d"]);
+  assert.ok(summary.quotaFeeds.some((feed) => feed.key === "cursor"), "summary must project a Cursor quota feed");
+  assert.ok(summary.quotaFeeds.some((feed) => feed.key === "grok"), "summary must project a Grok quota feed");
+  assert.ok(summary.quotaFeeds.some((feed) => feed.key === "codex"), "summary must project a Codex quota feed");
+  const cursorFeed = summary.quotaFeeds.find((feed) => feed.key === "cursor");
+  assert.equal(
+    (cursorFeed.items || []).some((item) => /亿|万/.test(String(item.valueLabel || ""))),
+    false,
+    "Cursor USD remaining must not be formatted as OpenToken 亿/万",
+  );
 
   const firstState = getState();
   setState({
@@ -121,6 +135,15 @@ const { accountKeyForUpstreamUrl, buildSummary, getState, setState, localDateStr
   });
   const activityOnly = await buildSummary();
   assert.equal(activityOnly.sync.uploaded, false, "an activity heartbeat ack must never masquerade as a usage upload ack");
+
+  setState({
+    ...firstState,
+    leaderboard: null,
+  });
+  const unmatched = await buildSummary();
+  assert.equal(unmatched.actualTotal, 1571758301, "unmatched boards must fall back to local raw tokens");
+  assert.equal(unmatched.overallUsage.metric, "raw");
+  assert.equal(unmatched.usageScopeLabel, "实际 Token（本机）");
 
   console.log(`build summary domains ok: local=${summary.actualTotal}，leaderboard=${summary.leaderboardTotal}`);
 })().catch((err) => {
