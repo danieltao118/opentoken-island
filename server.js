@@ -1979,10 +1979,12 @@ function buildCursorQuotaFeed(usageJson, planJson = null) {
   if (hasAuto || hasApi) {
     if (hasAuto) items.push(cursorPercentItem("cursor-models", "Cursor 模型", autoPct, "含 Grok / Composer"));
     if (hasApi) {
+      // 实测 2026-09-01（用户对照 Cursor 仪表盘确认）：apiPercentUsed 与仪表盘口径相反——
+      // 仪表盘的"已用"是 100 - apiPercentUsed。按仪表盘口径展示。
       items.push(cursorPercentItem(
         "cursor-api",
         "其他模型",
-        apiPct,
+        100 - apiPct,
         limit > 0 ? `至少 ${formatUsdCents(limit)} API` : "",
       ));
     }
