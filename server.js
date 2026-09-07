@@ -1939,9 +1939,9 @@ function cursorSpendItem(key, label, usedCents, limitCents, resetAt) {
 
 function cursorPercentItem(key, label, usedPct, caption = "") {
   const parts = quotaPercentParts(usedPct);
-  const usedLabel = `已用 ${Math.round(parts.pctRaw)}%`;
-  // 与其他供应商的额度卡一致：大字（valueLabel）显示剩余，已用退到明细行。
-  const detail = [caption, usedLabel].filter(Boolean).join(" · ");
+  // 不设 usedLabel：面板大字（quotaHeadlineText）优先读 usedLabel，grok/codex/kimi 均不设
+  // 该字段而落到 remainingLabel（剩余）。设了会把大字劫持成"已用"。已用放明细行。
+  const detail = [caption, `已用 ${Math.round(parts.pctRaw)}%`].filter(Boolean).join(" · ");
   return {
     key,
     label,
@@ -1949,7 +1949,6 @@ function cursorPercentItem(key, label, usedPct, caption = "") {
     value: parts.pctRaw,
     total: 100,
     valueLabel: parts.remainingLabel,
-    usedLabel,
     remainingLabel: parts.remainingLabel,
     resetLabel: "",
     detail,

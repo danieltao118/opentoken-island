@@ -96,13 +96,13 @@ assert.ok(cursorModels, "Ultra must expose the Cursor Models pool");
 assert.ok(otherModels, "Ultra must expose the Other Models pool");
 assert.equal(cursorModels.label, "Cursor 模型");
 assert.equal(otherModels.label, "其他模型");
-assert.equal(cursorModels.usedLabel, "已用 8%");
+assert.equal(cursorModels.usedLabel, undefined);
 assert.equal(cursorModels.remainingLabel, "剩余 92%");
 assert.equal(cursorModels.pct, 8);
 assert.match(cursorModels.detail, /Grok|Composer/);
-// 大字（valueLabel）统一显示剩余，已用退到明细行（与其他供应商额度卡一致）。
+assert.match(cursorModels.detail, /已用 8%/);
+// 面板大字（quotaHeadlineText）在无 usedLabel 时落到 remainingLabel——与其他供应商一致。
 assert.equal(cursorModels.valueLabel, "剩余 92%");
-assert.equal(otherModels.usedLabel, "已用 31%");
 assert.equal(otherModels.remainingLabel, "剩余 69%");
 assert.equal(otherModels.valueLabel, "剩余 69%");
 assert.match(otherModels.detail, /已用 31%/);
