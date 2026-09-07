@@ -1940,14 +1940,15 @@ function cursorSpendItem(key, label, usedCents, limitCents, resetAt) {
 function cursorPercentItem(key, label, usedPct, caption = "") {
   const parts = quotaPercentParts(usedPct);
   const usedLabel = `已用 ${Math.round(parts.pctRaw)}%`;
-  const detail = [caption, parts.remainingLabel].filter(Boolean).join(" · ");
+  // 与其他供应商的额度卡一致：大字（valueLabel）显示剩余，已用退到明细行。
+  const detail = [caption, usedLabel].filter(Boolean).join(" · ");
   return {
     key,
     label,
     status: "ok",
     value: parts.pctRaw,
     total: 100,
-    valueLabel: usedLabel,
+    valueLabel: parts.remainingLabel,
     usedLabel,
     remainingLabel: parts.remainingLabel,
     resetLabel: "",
@@ -1979,12 +1980,10 @@ function buildCursorQuotaFeed(usageJson, planJson = null) {
   if (hasAuto || hasApi) {
     if (hasAuto) items.push(cursorPercentItem("cursor-models", "Cursor 模型", autoPct, "含 Grok / Composer"));
     if (hasApi) {
-      // 实测 2026-09-01（用户对照 Cursor 仪表盘确认）：apiPercentUsed 与仪表盘口径相反——
-      // 仪表盘的"已用"是 100 - apiPercentUsed。按仪表盘口径展示。
       items.push(cursorPercentItem(
         "cursor-api",
         "其他模型",
-        100 - apiPct,
+        apiPct,
         limit > 0 ? `至少 ${formatUsdCents(limit)} API` : "",
       ));
     }

@@ -100,10 +100,13 @@ assert.equal(cursorModels.usedLabel, "已用 8%");
 assert.equal(cursorModels.remainingLabel, "剩余 92%");
 assert.equal(cursorModels.pct, 8);
 assert.match(cursorModels.detail, /Grok|Composer/);
-// apiPercentUsed 与 Cursor 仪表盘口径相反（仪表盘已用 = 100 - apiPercentUsed，2026-09-01 实测）。
-assert.equal(otherModels.usedLabel, "已用 69%");
-assert.equal(otherModels.remainingLabel, "剩余 31%");
-assert.equal(otherModels.pct, 69);
+// 大字（valueLabel）统一显示剩余，已用退到明细行（与其他供应商额度卡一致）。
+assert.equal(cursorModels.valueLabel, "剩余 92%");
+assert.equal(otherModels.usedLabel, "已用 31%");
+assert.equal(otherModels.remainingLabel, "剩余 69%");
+assert.equal(otherModels.valueLabel, "剩余 69%");
+assert.match(otherModels.detail, /已用 31%/);
+assert.equal(otherModels.pct, 31);
 assert.match(otherModels.detail, /\$400/);
 assert.doesNotMatch(ultraFeed.detail, /\$323|\$321/);
 assert.match(ultraFeed.detail, /重置/);
