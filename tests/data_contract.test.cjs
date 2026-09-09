@@ -226,6 +226,43 @@ assert.throws(() => sanitizeUploadPayload({
   sig: "abcdef0123456789abcdef0123456789",
 }), /upload payload rejected/i);
 
+// 0.3.5 CLI 端点升级（2026-09-09 取证）：信封新增 register 元数据 + inventory/plan_snapshot 事件类型。
+const enrichedActivity = sanitizeUploadPayload({
+  schema: 2,
+  version: "2",
+  device: "0123456789abcdef",
+  seq: 203,
+  sent_at: "2026-09-09T01:19:00.000Z",
+  tz: "",
+  nonce: "abcdef0123456789",
+  register: { mode: "auto", endpoint: "scys.com", retry: 3, flags: ["a", "b"] },
+  events: [
+    { type: "inventory", os: "windows", os_version: "10.0.26200", arch: "x86_64", hw_model: "", tools: ["codex", "claude-code", { name: "zcode", version: "1.0" }] },
+    { type: "plan_snapshot", tier: "PRO", cycle_end: "2026-09-16T22:23:00Z", capped: false },
+  ],
+  sig: "abcdef0123456789abcdef0123456789",
+});
+assert.equal(enrichedActivity.events[0].type, "inventory");
+assert.equal(enrichedActivity.events[0].os, "windows");
+assert.equal(enrichedActivity.events[1].type, "plan_snapshot");
+assert.equal(enrichedActivity.events[1].tier, "PRO");
+assert.equal(enrichedActivity.register.mode, "auto");
+assert.equal(enrichedActivity.register.retry, 3);
+// 闸门仍要拦敏感值/不安全键。
+assert.throws(() => sanitizeUploadPayload({
+  schema: 2, version: "2", device: "0123456789abcdef", seq: 204,
+  sent_at: "2026-09-09T01:19:00.000Z", tz: "", nonce: "abcdef0123456789",
+  register: { "bad key!": 1 },
+  events: [], sig: "abcdef0123456789abcdef0123456789",
+}), /upload payload rejected/i);
+assert.throws(() => sanitizeUploadPayload({
+  schema: 2, version: "2", device: "0123456789abcdef", seq: 205,
+  sent_at: "2026-09-09T01:19:00.000Z", tz: "", nonce: "abcdef0123456789",
+  events: [{ type: "plan_snapshot", note: "prompt=secret" }],
+  sig: "abcdef0123456789abcdef0123456789",
+}), /upload payload rejected/i);
+
+
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
 const safeV2 = sanitizeUploadPayload({
   schema: "opentoken.activity.v2",

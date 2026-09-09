@@ -1148,6 +1148,35 @@ function uploadRejected(reason) {
   throw new Error(`Upload payload rejected: ${reason}`);
 }
 
+// 有界结构透传：键名安全、值限有界原始值/原始值数组/最多两层同规则嵌套对象，字符串过敏感正则。
+// 用于 CLI 新增的 register 信封字段与 plan_snapshot 等元数据——CLI 是可信源头、信封带 sig
+// 且按原始字节转发，这里只做结构闸门（防夹带敏感内容/超大载荷），不做语义改写。
+function boundedGateValue(value, field, depth = 0) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) uploadRejected(`${field} must be finite`);
+    return value;
+  }
+  if (typeof value === "boolean" || value === null) return value;
+  if (typeof value === "string") return safeProtocolString(value, field, 200, { allowEmpty: true });
+  if (Array.isArray(value)) {
+    if (depth >= 2) uploadRejected(`${field} nests too deep`);
+    if (value.length > 200) uploadRejected(`${field} array is too large`);
+    return value.map((item, index) => boundedGateValue(item, `${field}[${index}]`, depth + 1));
+  }
+  if (plainObject(value)) {
+    const keys = Object.keys(value);
+    if (depth >= 2) uploadRejected(`${field} nests too deep`);
+    if (keys.length > 64) uploadRejected(`${field} object has too many keys`);
+    const out = {};
+    for (const key of keys) {
+      if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(key)) uploadRejected(`${field} has unsafe key ${key.slice(0, 16)}`);
+      out[key] = boundedGateValue(value[key], `${field}.${key}`, depth + 1);
+    }
+    return out;
+  }
+  uploadRejected(`${field} has unsupported type`);
+}
+
 function plainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1335,6 +1364,23 @@ function sanitizeActivityEvent(event, index = 0) {
       active_seconds: safeNonNegativeNumber(event.active_seconds, `events[${index}].active_seconds`),
     };
   }
+  // 0.3.5 CLI 端点升级后新增的元数据事件（2026-09-09 取证）：设备/工具清单与订阅档位快照，
+  // 官方 T0 采集面（privacy 承诺内）。inventory 字段已知按 exactKeys；plan_snapshot 结构
+  // 未完全探明，走有界结构透传闸门。
+  if (type === "inventory") {
+    exactKeys(event, ["type", "os", "os_version", "arch", "hw_model", "tools"], `events[${index}]`);
+    return {
+      type,
+      os: safeProtocolString(event.os, `events[${index}].os`, 80),
+      os_version: safeProtocolString(event.os_version, `events[${index}].os_version`, 80),
+      arch: safeProtocolString(event.arch, `events[${index}].arch`, 40),
+      hw_model: safeProtocolString(event.hw_model, `events[${index}].hw_model`, 120, { allowEmpty: true }),
+      tools: boundedGateValue(event.tools, `events[${index}].tools`, 0),
+    };
+  }
+  if (type === "plan_snapshot") {
+    return boundedGateValue(event, `events[${index}]`, 1);
+  }
   if (type === "client_health") {
     exactKeys(event, ["type", "captured_at", "payload"], `events[${index}]`);
     exactKeys(event.payload, ["scan_ms", "ledger", "unhoured"], `events[${index}].payload`);
@@ -1395,7 +1441,7 @@ function sanitizeUploadPayload(payload) {
     return sanitized;
   }
   if (Array.isArray(payload.events)) {
-    exactKeys(payload, ["schema", "version", "device", "seq", "sent_at", "tz", "nonce", "events", "sig"], "root");
+    exactKeys(payload, ["schema", "version", "device", "seq", "sent_at", "tz", "nonce", "events", "sig", "register"], "root");
     if (payload.events.length > 10000) uploadRejected("too many events");
     return {
       // 0.3.5 CLI 实测：schema 发数字、version 发字符串（取证日志 2026-08-16），两者都兼容。
@@ -1413,6 +1459,14 @@ function sanitizeUploadPayload(payload) {
       nonce: safeOpaqueToken(payload.nonce, "nonce"),
       events: payload.events.map(sanitizeActivityEvent),
       sig: safeOpaqueToken(payload.sig, "sig", 16),
+      // CLI 端点升级后信封新增注册元数据（2026-09-09 取证）：有界结构透传。
+      ...(payload.register !== undefined
+        ? {
+          register: plainObject(payload.register)
+            ? boundedGateValue(payload.register, "register", 0)
+            : uploadRejected("register must be an object"),
+        }
+        : {}),
     };
   }
   uploadRejected("unknown schema");
@@ -5410,12 +5464,21 @@ async function handleUploadProxy(req, res, url) {
   } catch (error) {
     // 事件类型是协议枚举（hourly/session/client_health…），记录下来便于逐层适配；仍不记任何业务值。
     let eventTypes = "";
+    const typeShapes = {};
     if (Array.isArray(parsed?.events)) {
       const seen = [];
       for (const item of parsed.events) {
         const raw = typeof item?.type === "string" ? item.type : "?";
         const tag = /^[A-Za-z0-9_.:-]{1,40}$/.test(raw) ? raw : "?";
-        if (!seen.includes(tag)) seen.push(tag);
+        if (!seen.includes(tag)) {
+          seen.push(tag);
+          if (plainObject(item)) {
+            const shape = plainObject(item.payload)
+              ? { keys: Object.keys(item), payload: payloadShapeSummary(item.payload) }
+              : payloadShapeSummary(item);
+            typeShapes[tag] = JSON.stringify(shape).slice(0, 300);
+          }
+        }
         if (seen.length >= 12) break;
       }
       eventTypes = seen.join(",").slice(0, 200);
@@ -5424,6 +5487,7 @@ async function handleUploadProxy(req, res, url) {
       path: redactedPath,
       reason: "schema-rejected",
       shape: payloadShapeSummary(parsed),
+      ...(plainObject(parsed?.register) ? { register: payloadShapeSummary(parsed.register) } : {}),
       ...(Array.isArray(parsed?.events) && plainObject(parsed.events[0])
         ? {
           event0: payloadShapeSummary(parsed.events[0]),
@@ -5433,6 +5497,7 @@ async function handleUploadProxy(req, res, url) {
         }
         : {}),
       ...(eventTypes ? { eventTypes } : {}),
+      ...(Object.keys(typeShapes).length ? { typeShapes: JSON.stringify(typeShapes).slice(0, 1600) } : {}),
       detail: String(error.message || "").slice(0, 200),
     });
     return json(res, 400, { ok: false, error: String(error.message || "Upload payload rejected") });
