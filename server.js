@@ -5439,6 +5439,31 @@ function accountStatus() {
   };
 }
 
+// CLI 0.3.22 起会经 webhook 基址拉取 client-config 等只读端点；代理此前 404 导致其
+// 配置退化到陈旧缓存（self-update 渠道数据也因此失真）。除上传 POST 外的 tokenrank
+// GET 一律透传上游（含查询串），沿用 DNS 兜底与代理隧道链路。
+async function passthroughTokenrankGet(res, url) {
+  const upstreamOrigin = proxyRuntime.upstreamUrl
+    ? new URL(proxyRuntime.upstreamUrl).origin
+    : DEFAULT_UPSTREAM_ORIGIN;
+  const target = upstreamOrigin + url.pathname + url.search;
+  const result = await requestTextWithRetry("GET", target, "", {
+    accept: "application/json",
+    "user-agent": "opentoken-island/0.1",
+  }, 20000, 2);
+  if (!result.ok) {
+    return json(res, result.status && result.status >= 400 ? result.status : 502, {
+      ok: false,
+      error: `upstream ${result.status || "network failure"} ${String(result.error || "").slice(0, 120)}`,
+    });
+  }
+  res.writeHead(200, {
+    "content-type": result.headers["content-type"] || "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(result.body);
+}
+
 async function handleUploadProxy(req, res, url) {
   const proxy = ensureProxyConfig();
   const upstreamUrl = proxy.upstreamUrl || `${DEFAULT_UPSTREAM_ORIGIN}${url.pathname}`;
@@ -5891,6 +5916,9 @@ const server = http.createServer((req, res) => {
     return handleUploadProxy(req, res, url);
   }
   if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
+  if (req.method === "GET" && url.pathname.startsWith("/tokenrank/api/")) {
+    return passthroughTokenrankGet(res, url);
+  }
   return serveStatic(req, res, url);
 });
 
