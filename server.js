@@ -3745,8 +3745,13 @@ function buildGeminiQuotaFeed(payload) {
     label: "Gemini",
     status: "ok",
     reason: "",
+    // 该池就是 Codex 里 gemini-3.8-flash 等模型经 opencodex 路由的 Antigravity 后端额度。
     valueLabel: items[0] ? items[0].remainingLabel : "--",
-    detail: items.map((item) => `${item.label} ${item.remainingLabel}`).join(" · ") || "Google Antigravity 额度",
+    detail: [
+      "Codex 路由 · gemini-3.8-flash",
+      ...items.map((item) => `${item.label} ${item.remainingLabel}`),
+    ].join(" · ") || "Google Antigravity 额度",
+    levelLabel: "ANTIGRAVITY",
     items,
     pct: items[0] ? items[0].pct : 4,
   };
