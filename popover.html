@@ -146,6 +146,24 @@ function defaultQuotaFeed(key) {
         detail: '等待 Kimi 周期数据 · 等待重置时间',
         pct: 4
       }]
+    },
+    gemini: {
+      key: 'gemini',
+      label: 'Gemini',
+      valueLabel: '--',
+      detail: '等待 Gemini 额度',
+      status: 'waiting',
+      items: [{
+        label: '5小时额度',
+        remainingLabel: '--',
+        detail: '等待 Gemini 窗口数据 · 等待重置时间',
+        pct: 4
+      }, {
+        label: '周额度',
+        remainingLabel: '--',
+        detail: '等待 Gemini 周期数据 · 等待重置时间',
+        pct: 4
+      }]
     }
   };
   return defaults[key];
@@ -201,7 +219,8 @@ function renderQuotaFeeds(feeds) {
   const grok = list.find((feed) => feed && feed.key === 'grok') || defaultQuotaFeed('grok');
   const codex = list.find((feed) => feed && feed.key === 'codex') || defaultQuotaFeed('codex');
   const kimi = list.find((feed) => feed && feed.key === 'kimi') || defaultQuotaFeed('kimi');
-  quotaList().innerHTML = [glm, cursor, grok, codex, kimi].map(renderQuotaCard).join('');
+  const gemini = list.find((feed) => feed && feed.key === 'gemini') || defaultQuotaFeed('gemini');
+  quotaList().innerHTML = [glm, cursor, grok, codex, kimi, gemini].map(renderQuotaCard).join('');
 }
 
 function renderSyncFacts(facts) {

@@ -3,6 +3,7 @@ const path = require("path");
 
 const {
   accountKeyForUpstreamUrl,
+  buildGeminiQuotaFeed,
   isolateAccountState,
   leaderboardProjection,
   mergeLocalUsageSnapshot,
@@ -261,6 +262,35 @@ assert.throws(() => sanitizeUploadPayload({
   events: [{ type: "plan_snapshot", note: "prompt=secret" }],
   sig: "abcdef0123456789abcdef0123456789",
 }), /upload payload rejected/i);
+
+// Gemini 额度卡（Google Antigravity，经 opencodex /api/provider-quotas）：Gem 5h + 周桶。
+const geminiFeed = buildGeminiQuotaFeed({
+  reports: [{
+    provider: "google-antigravity",
+    label: "Google Antigravity",
+    source: "google-antigravity:retrieveUserQuotaSummary",
+    quota: {
+      customWindows: [
+        { label: "Gem", percent: 27.8456, resetAt: 1790702754000 },
+        { label: "Gem (Weekly)", percent: 19.00742, resetAt: 1791194996000 },
+        { label: "Cla", percent: 0, resetAt: 1790707033000 },
+        { label: "Cla (Weekly)", percent: 44.13152, resetAt: 1791198682000 },
+      ],
+      updatedAt: 1790689032055,
+    },
+  }],
+});
+assert.equal(geminiFeed.key, "gemini");
+assert.equal(geminiFeed.status, "ok");
+assert.equal(geminiFeed.items.length, 2);
+assert.equal(geminiFeed.items[0].label, "5小时额度");
+assert.equal(geminiFeed.items[0].usedLabel, undefined);
+assert.equal(geminiFeed.items[0].remainingLabel, "剩余 72%");
+assert.match(geminiFeed.items[0].detail, /已用 28%/);
+assert.equal(geminiFeed.items[1].label, "周额度");
+assert.equal(geminiFeed.items[1].remainingLabel, "剩余 81%");
+// 无 antigravity 报告时如实降级为 waiting。
+assert.equal(buildGeminiQuotaFeed({ reports: [{ provider: "openai" }] }).status, "waiting");
 
 
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。

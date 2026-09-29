@@ -79,6 +79,9 @@ let cursorQuotaCache = { at: 0, fingerprint: "", feed: null };
 let grokQuotaCache = { at: 0, fingerprint: "", feed: null };
 let codexQuotaCache = { at: 0, fingerprint: "", feed: null };
 let kimiQuotaCache = { at: 0, fingerprint: "", feed: null };
+let geminiQuotaCache = { at: 0, fingerprint: "", feed: null };
+let geminiRuntime = { fingerprint: "", source: "unknown" };
+const geminiLastGoodByAccount = new Map();
 let cursorRuntime = { fingerprint: "", source: "unknown" };
 let grokRuntime = { fingerprint: "", source: "unknown" };
 let codexRuntime = { fingerprint: "", source: "unknown" };
@@ -1883,6 +1886,18 @@ const KIMI_QUOTA_COPY = {
   waiting: { valueLabel: "--", detail: "等待 Kimi 编程套餐额度" },
 };
 
+// Gemini（Google Antigravity）额度：经 opencodex 管理接口读取——它持 Google OAuth 并解析
+// v1internal:retrieveUserQuotaSummary（Gemini/Claude 各 5h+周桶）。island 只需带本机管理
+// 令牌读 10100，不直接接触 Google 凭据。
+const OPENCODEX_QUOTA_URL = "http://127.0.0.1:10100/api/provider-quotas";
+const OPENCODEX_ADMIN_TOKEN_PATH = path.join(HOME, ".opencodex", "admin-api-token");
+const GEMINI_QUOTA_COPY = {
+  "not-connected": { valueLabel: "未配置", detail: "OpenCodex 管理令牌不可读" },
+  auth: { valueLabel: "管理令牌失效", detail: "OpenCodex 管理接口拒绝了本机令牌" },
+  read: { valueLabel: "无法读取额度", detail: "Gemini 接口暂不可用" },
+  waiting: { valueLabel: "--", detail: "等待 Gemini 额度" },
+};
+
 const CODEX_QUOTA_COPY = {
   "not-connected": { valueLabel: "未登录", detail: "请先运行 codex auth login" },
   auth: { valueLabel: "登录失效", detail: "请重新运行 codex auth login" },
@@ -1943,6 +1958,13 @@ function kimiQuotaUnavailable(reason = "waiting") {
   return providerQuotaUnavailable("kimi", "Kimi", KIMI_QUOTA_COPY, [
     { key: "kimi-5h", label: "5小时额度" },
     { key: "kimi-weekly", label: "周额度" },
+  ], reason);
+}
+
+function geminiQuotaUnavailable(reason = "waiting") {
+  return providerQuotaUnavailable("gemini", "Gemini", GEMINI_QUOTA_COPY, [
+    { key: "gemini-5h", label: "5小时额度" },
+    { key: "gemini-weekly", label: "周额度" },
   ], reason);
 }
 
@@ -3680,6 +3702,147 @@ function peekCodexQuota() {
   return codexQuotaUnavailable("waiting");
 }
 
+function loadOpenCodexAdminToken() {
+  const override = String(process.env.OPENTOKEN_OPENCODEX_ADMIN_TOKEN || "").trim();
+  if (override) return override;
+  try {
+    const token = fs.readFileSync(OPENCODEX_ADMIN_TOKEN_PATH, "utf8").trim();
+    return /^ocx_admin_[A-Za-z0-9_-]{43}$/.test(token) ? token : "";
+  } catch {
+    return "";
+  }
+}
+
+function buildGeminiQuotaFeed(payload) {
+  const reports = Array.isArray(payload?.reports) ? payload.reports : [];
+  const report = reports.find((r) => plainObject(r) && r.provider === "google-antigravity");
+  if (!report) return geminiQuotaUnavailable("waiting");
+  const windows = Array.isArray(report.quota?.customWindows) ? report.quota.customWindows : [];
+  const findWindow = (label) => windows.find((w) => plainObject(w) && String(w.label || "").toLowerCase() === label);
+  const fiveHour = findWindow("gem");
+  const weekly = findWindow("gem (weekly)");
+  if (!fiveHour && !weekly) return geminiQuotaUnavailable("waiting");
+  const items = [];
+  for (const [w, key, label] of [[fiveHour, "gemini-5h", "5小时额度"], [weekly, "gemini-weekly", "周额度"]]) {
+    if (!w) continue;
+    const parts = quotaPercentParts(Number(w.percent));
+    const resetLabel = Number.isFinite(Number(w.resetAt)) ? `${formatResetTime(Number(w.resetAt))} 重置` : "";
+    items.push({
+      key,
+      label,
+      status: "ok",
+      value: parts.pctRaw,
+      total: 100,
+      valueLabel: parts.remainingLabel,
+      remainingLabel: parts.remainingLabel,
+      resetLabel: "",
+      detail: [`已用 ${Math.round(parts.pctRaw)}%`, resetLabel].filter(Boolean).join(" · "),
+      pct: parts.pct,
+    });
+  }
+  return {
+    key: "gemini",
+    label: "Gemini",
+    status: "ok",
+    reason: "",
+    valueLabel: items[0] ? items[0].remainingLabel : "--",
+    detail: items.map((item) => `${item.label} ${item.remainingLabel}`).join(" · ") || "Google Antigravity 额度",
+    items,
+    pct: items[0] ? items[0].pct : 4,
+  };
+}
+
+async function fetchGeminiQuota(token) {
+  if (!token) return geminiQuotaUnavailable("not-connected");
+  const headers = {
+    "x-opencodex-api-key": token,
+    accept: "application/json",
+    "user-agent": "opentoken-island/0.1",
+  };
+  const resp = await requestTextWithRetry("GET", OPENCODEX_QUOTA_URL, "", headers, 15000, 2);
+  if (resp.status === 401 || resp.status === 403) return geminiQuotaUnavailable("auth");
+  if (!resp.ok || !plainObject(resp.json)) {
+    logIslandEvent("gemini quota refresh failed", { status: Number(resp.status || 0) });
+    return geminiQuotaUnavailable("read");
+  }
+  return buildGeminiQuotaFeed(resp.json);
+}
+
+async function refreshGeminiQuota(token) {
+  const fingerprint = "antigravity";
+  const refreshKey = `gemini:${fingerprint}`;
+  const activeRefresh = quotaRefreshPromises.get(refreshKey);
+  if (activeRefresh) return activeRefresh;
+  const refresh = (async () => {
+    const lastAttemptAt = new Date().toISOString();
+    let fresh;
+    try {
+      fresh = await fetchGeminiQuota(token);
+    } catch {
+      fresh = geminiQuotaUnavailable("read");
+    }
+    fresh = { ...fresh, lastAttemptAt };
+    if (fresh.status === "ok") {
+      fresh = { ...fresh, capturedAt: lastAttemptAt, lastSuccessfulAt: lastAttemptAt };
+      geminiLastGoodByAccount.set(fingerprint, fresh);
+    } else {
+      const lastGood = geminiLastGoodByAccount.get(fingerprint);
+      fresh = retainLastGoodProviderQuota(fresh, lastGood, lastAttemptAt);
+    }
+    geminiQuotaCache = { at: Date.now(), fingerprint, feed: fresh };
+    return fresh;
+  })();
+  quotaRefreshPromises.set(refreshKey, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (quotaRefreshPromises.get(refreshKey) === refresh) quotaRefreshPromises.delete(refreshKey);
+  }
+}
+
+async function cachedGeminiQuota() {
+  const token = loadOpenCodexAdminToken();
+  if (!token) {
+    const feed = geminiQuotaUnavailable("not-connected");
+    geminiRuntime = { fingerprint: "not-connected", source: "missing" };
+    geminiQuotaCache = { at: Date.now(), fingerprint: "not-connected", feed };
+    return feed;
+  }
+  geminiRuntime = { fingerprint: "antigravity", source: "opencodex" };
+  if (
+    geminiQuotaCache.feed
+    && geminiQuotaCache.fingerprint === "antigravity"
+    && Date.now() - geminiQuotaCache.at < quotaCacheTtl(geminiQuotaCache.feed)
+  ) {
+    return geminiQuotaCache.feed;
+  }
+  void refreshGeminiQuota(token);
+  const lastGood = geminiLastGoodByAccount.get("antigravity");
+  if (lastGood) {
+    return retainLastGoodProviderQuota(
+      { key: "gemini", status: "partial", detail: "正在刷新 Gemini 额度" },
+      lastGood,
+    );
+  }
+  return geminiQuotaUnavailable("waiting");
+}
+
+function peekGeminiQuota() {
+  if (geminiRuntime.source === "test-state") {
+    return selectProviderQuotaSnapshot(
+      geminiRuntime.fingerprint,
+      geminiQuotaCache,
+      {},
+      geminiQuotaUnavailable,
+    );
+  }
+  void cachedGeminiQuota();
+  if (geminiQuotaCache.feed) return geminiQuotaCache.feed;
+  const lastGood = geminiLastGoodByAccount.get("antigravity");
+  if (lastGood) return retainLastGoodProviderQuota({ key: "gemini", status: "partial", detail: "正在刷新 Gemini 额度" }, lastGood);
+  return geminiQuotaUnavailable("waiting");
+}
+
 async function fetchKimiQuota(auth) {
   if (!auth) return kimiQuotaUnavailable("not-connected");
   const headers = {
@@ -3838,6 +4001,7 @@ async function quotaFeeds(byTool = {}, total = 0) {
     peekGrokQuota(),
     peekCodexQuota(),
     peekKimiQuota(),
+    peekGeminiQuota(),
   ];
 }
 
@@ -5953,6 +6117,7 @@ module.exports = {
   uploadTransportAcked,
   grokQuotaUnavailable,
   buildKimiQuotaFeed,
+  buildGeminiQuotaFeed,
   kimiQuotaUnavailable,
   kimiWindowMeta,
   loadKimiCodingAuth,
