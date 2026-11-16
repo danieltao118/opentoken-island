@@ -292,6 +292,52 @@ assert.equal(geminiFeed.items[1].remainingLabel, "剩余 81%");
 // 无 antigravity 报告时如实降级为 waiting。
 assert.equal(buildGeminiQuotaFeed({ reports: [{ provider: "openai" }] }).status, "waiting");
 
+// 0.3.64 CLI schema 演进（2026-11-16 取证）：inventory.tools 元素带嵌套对象（cloud_sync）、
+// client_health 新增 event_id 顶层字段，payload 字段集漂移。
+const v064Activity = sanitizeUploadPayload({
+  schema: 2, version: "2", device: "0123456789abcdef", seq: 206,
+  sent_at: "2026-11-16T02:44:00.000Z", tz: "", nonce: "abcdef0123456789",
+  events: [
+    {
+      type: "inventory", os: "windows", os_version: "10.0.26200", arch: "x86_64", hw_model: "",
+      tools: [
+        "codex",
+        { name: "claude-code", version: "2.1.302", cloud_sync: { enabled: true, last_push: 1790000000, state: { synced: true } } },
+      ],
+    },
+    { type: "client_health", captured_at: "2026-11-16T02:44:00Z", event_id: "ev-0f61c2", payload: { scan_ms: 41000, ledger: { usage: 300, hourly: 2600, v2_sessions: 3600, new_counter: 7 }, unhoured: [], extra_flag: true } },
+  ],
+  sig: "abcdef0123456789abcdef0123456789",
+});
+assert.equal(v064Activity.events[0].type, "inventory");
+assert.equal(v064Activity.events[0].tools[1].cloud_sync.enabled, true);
+assert.equal(v064Activity.events[1].event_id, "ev-0f61c2");
+assert.equal(v064Activity.events[1].payload.ledger.new_counter, 7);
+// 嵌套仍必须有界：超过四层或敏感值照样拒绝。
+assert.throws(() => sanitizeUploadPayload({
+  schema: 2, version: "2", device: "0123456789abcdef", seq: 207,
+  sent_at: "2026-11-16T02:44:00.000Z", tz: "", nonce: "abcdef0123456789",
+  events: [{ type: "inventory", os: "windows", os_version: "10", arch: "x86_64", hw_model: "", tools: [{ a: { b: { c: { d: { e: 1 } } } } }] }],
+  sig: "abcdef0123456789abcdef0123456789",
+}), /upload payload rejected/i);
+
+// 0.3.64 v1 用量批次新增 opencode_receipt_id 回执对象——重建转发必须透传保留。
+const receiptUsage = sanitizeUploadPayload({
+  version: 1,
+  device: "0123456789abcdef",
+  opencode_receipt_id: { batch: "rc-88", issued_at: 1790000000, source: { kind: "dated" } },
+  rows: [{ date: "2026-11-16", tool: "codex", model: "gpt-6-astra", input: 10, output: 20, cache_read: 0, cache_write: 0, normalized: 30 }],
+  sessions: [],
+});
+assert.equal(receiptUsage.opencode_receipt_id.batch, "rc-88");
+assert.equal(receiptUsage.opencode_receipt_id.source.kind, "dated");
+// 无回执的旧形态依旧放行。
+assert.equal(sanitizeUploadPayload({
+  version: 1, device: "0123456789abcdef",
+  rows: [{ date: "2026-11-16", tool: "codex", model: "gpt", input: 1, output: 2, cache_read: 0, cache_write: 0, normalized: 3 }],
+  sessions: [],
+}).opencode_receipt_id, undefined);
+
 
 // v2 批数据（0.3.5 CLI 实际线格式）：v2_hourly + v2_sessions + 可选信封字段。
 const safeV2 = sanitizeUploadPayload({

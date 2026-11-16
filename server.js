@@ -1151,9 +1151,11 @@ function uploadRejected(reason) {
   throw new Error(`Upload payload rejected: ${reason}`);
 }
 
-// 有界结构透传：键名安全、值限有界原始值/原始值数组/最多两层同规则嵌套对象，字符串过敏感正则。
-// 用于 CLI 新增的 register 信封字段与 plan_snapshot 等元数据——CLI 是可信源头、信封带 sig
-// 且按原始字节转发，这里只做结构闸门（防夹带敏感内容/超大载荷），不做语义改写。
+// 有界结构透传：键名安全、值限有界原始值/原始值数组/最多四层同规则嵌套对象，字符串过敏感正则。
+// 用于 CLI 新增的 register 信封字段与 plan_snapshot/inventory 等元数据——CLI 是可信源头、信封带
+// sig 且按原始字节转发，这里只做结构闸门（防夹带敏感内容/超大载荷），不做语义改写。
+// CLI 0.3.64 的 inventory.tools 元素带 cloud_sync 等嵌套对象，深度上限 2 → 4（2026-11-16）。
+const BOUNDED_GATE_MAX_DEPTH = 4;
 function boundedGateValue(value, field, depth = 0) {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) uploadRejected(`${field} must be finite`);
@@ -1162,13 +1164,13 @@ function boundedGateValue(value, field, depth = 0) {
   if (typeof value === "boolean" || value === null) return value;
   if (typeof value === "string") return safeProtocolString(value, field, 200, { allowEmpty: true });
   if (Array.isArray(value)) {
-    if (depth >= 2) uploadRejected(`${field} nests too deep`);
+    if (depth >= BOUNDED_GATE_MAX_DEPTH) uploadRejected(`${field} nests too deep`);
     if (value.length > 200) uploadRejected(`${field} array is too large`);
     return value.map((item, index) => boundedGateValue(item, `${field}[${index}]`, depth + 1));
   }
   if (plainObject(value)) {
     const keys = Object.keys(value);
-    if (depth >= 2) uploadRejected(`${field} nests too deep`);
+    if (depth >= BOUNDED_GATE_MAX_DEPTH) uploadRejected(`${field} nests too deep`);
     if (keys.length > 64) uploadRejected(`${field} object has too many keys`);
     const out = {};
     for (const key of keys) {
@@ -1385,21 +1387,16 @@ function sanitizeActivityEvent(event, index = 0) {
     return boundedGateValue(event, `events[${index}]`, 1);
   }
   if (type === "client_health") {
-    exactKeys(event, ["type", "captured_at", "payload"], `events[${index}]`);
-    exactKeys(event.payload, ["scan_ms", "ledger", "unhoured"], `events[${index}].payload`);
-    exactKeys(event.payload.ledger, ["usage", "hourly", "v2_sessions"], `events[${index}].payload.ledger`);
+    // 0.3.64 新增 event_id 顶层字段；payload 的字段集随版本漂移，整体走有界结构透传闸门
+    // （转发仍是原始字节，闸门只防夹带敏感值/超大载荷）。
+    exactKeys(event, ["type", "captured_at", "event_id", "payload"], `events[${index}]`);
     return {
       type,
       captured_at: safeProtocolString(event.captured_at, `events[${index}].captured_at`, 40),
-      payload: {
-        scan_ms: safeNonNegativeNumber(event.payload.scan_ms, `events[${index}].payload.scan_ms`),
-        ledger: {
-          usage: safeInteger(event.payload.ledger.usage, `events[${index}].payload.ledger.usage`),
-          hourly: safeInteger(event.payload.ledger.hourly, `events[${index}].payload.ledger.hourly`),
-          v2_sessions: safeInteger(event.payload.ledger.v2_sessions, `events[${index}].payload.ledger.v2_sessions`),
-        },
-        unhoured: passthroughNonNegativeCount(event.payload.unhoured, `events[${index}].payload.unhoured`),
-      },
+      ...(event.event_id !== undefined
+        ? { event_id: safeProtocolString(event.event_id, `events[${index}].event_id`, 120, { allowEmpty: true }) }
+        : {}),
+      payload: boundedGateValue(event.payload, `events[${index}].payload`, 1),
     };
   }
   uploadRejected(`events[${index}].type (${type}) is unsupported`);
@@ -1408,7 +1405,8 @@ function sanitizeActivityEvent(event, index = 0) {
 function sanitizeUploadPayload(payload) {
   if (!plainObject(payload)) uploadRejected("root must be an object");
   if (Array.isArray(payload.rows)) {
-    exactKeys(payload, ["version", "device", "rows", "sessions"], "root");
+    // 0.3.64 起用量批次带 opencode_receipt_id 回执对象——v1 转发走重建，回执必须透传保留。
+    exactKeys(payload, ["version", "device", "rows", "sessions", "opencode_receipt_id"], "root");
     if (payload.rows.length > 10000 || (payload.sessions || []).length > 10000) uploadRejected("too many rows");
     return {
       version: typeof payload.version === "string"
@@ -1417,6 +1415,16 @@ function sanitizeUploadPayload(payload) {
       device: safeProtocolString(payload.device, "device", 160),
       rows: payload.rows.map(sanitizeUsageRow),
       sessions: (Array.isArray(payload.sessions) ? payload.sessions : uploadRejected("sessions must be an array")).map(sanitizeSessionRow),
+      ...(payload.opencode_receipt_id !== undefined
+        ? {
+          // 无回执时 CLI 发 null（typeof null === "object"），原样放行。
+          opencode_receipt_id: payload.opencode_receipt_id === null
+            ? null
+            : plainObject(payload.opencode_receipt_id)
+              ? boundedGateValue(payload.opencode_receipt_id, "opencode_receipt_id", 0)
+              : uploadRejected("opencode_receipt_id must be an object or null"),
+        }
+        : {}),
     };
   }
   if (Array.isArray(payload.v2_hourly) || Array.isArray(payload.v2_sessions)) {
