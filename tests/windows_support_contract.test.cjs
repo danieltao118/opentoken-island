@@ -7,7 +7,7 @@ const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "ut
 
 const pkg = readJson("package.json");
 const packageLock = readJson("package-lock.json");
-assert.equal(pkg.version, "0.1.5");
+assert.equal(pkg.version, "0.1.6");
 assert.equal(packageLock.version, pkg.version);
 assert.equal(packageLock.packages[""].version, pkg.version);
 assert.equal(pkg.scripts.test, "node tests/windows_support_contract.test.cjs && node tests/usage_trends.test.cjs && node tests/data_contract.test.cjs && node tests/quota_providers.test.cjs && node tests/leaderboard_race.test.cjs && node tests/leaderboard_sync.test.cjs && node tests/sync_pipeline.test.cjs && node tests/leaderboard_city.test.cjs && node tests/leaderboard_binding.test.cjs && node tests/leaderboard_window.test.cjs && node tests/server_api.test.cjs && node tests/build_summary.test.cjs && node tests/upload_scan.test.cjs");
